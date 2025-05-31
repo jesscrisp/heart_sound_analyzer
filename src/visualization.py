@@ -106,7 +106,7 @@ class HeartSoundVisualizer:
             logger.info(f"Saved visualization to {output_path}")
         
         if show:
-            plt.show()
+            plt.show(block=True)
         
         return fig
     
@@ -188,40 +188,56 @@ class HeartSoundVisualizer:
             show: If True, display the plot
             **kwargs: Additional arguments for plot_signal()
         """
+        fig = None  # Initialize fig to None for the finally block
         try:
             fig, ax = plt.subplots(figsize=(14, 6))
             
             # Plot the signal
             self.plot_signal(signal, sample_rate, ax=ax, **kwargs)
 
-            # Plot the envelope if available
+            time_axis_signal = np.linspace(0, len(signal) / sample_rate, num=len(signal))
             envelope_data = segments.get('envelope')
+            plotted_envelope = False # Flag to track if envelope was actually plotted
+
             if envelope_data is not None and len(np.asarray(envelope_data)) > 0:
-                envelope_data = np.asarray(envelope_data)
-                time_axis_env = np.linspace(0, len(signal) / sample_rate, num=len(signal))
-                # Ensure envelope_data has the same length as time_axis_env for plotting
-                if len(envelope_data) == len(time_axis_env):
-                    ax.plot(time_axis_env, envelope_data, color='purple', linestyle='--', alpha=0.7, label='Envelope')
+                current_envelope_data = np.asarray(envelope_data).copy() # Work with a copy
+                
+                # Adjust envelope length if it mismatches signal length
+                if len(current_envelope_data) != len(time_axis_signal):
+                    logger.debug(f"Original envelope length ({len(current_envelope_data)}) differs from signal length ({len(time_axis_signal)}).")
+                    if len(current_envelope_data) > len(time_axis_signal):
+                        logger.debug(f"Truncating envelope to match signal length: {len(time_axis_signal)}.")
+                        current_envelope_data = current_envelope_data[:len(time_axis_signal)]
+                    # If envelope is shorter, it won't be plotted by the next check.
+
+                # Ensure current_envelope_data has the same length as time_axis_signal for plotting
+                if len(current_envelope_data) == len(time_axis_signal):
+                    ax.plot(time_axis_signal, current_envelope_data, color='purple', linestyle='--', alpha=0.7, label='Envelope')
+                    plotted_envelope = True
                 else:
-                    logger.warning(f"Envelope length ({len(envelope_data)}) does not match signal length ({len(time_axis_env)}). Skipping envelope plot.")
+                    logger.warning(f"Envelope length ({len(current_envelope_data)}) still does not match signal length ({len(time_axis_signal)}) after attempted adjustment. Skipping envelope plot.")
         
             # Plot S1 segments
             s1_starts = segments.get('s1_starts', [])
             s1_ends = segments.get('s1_ends', [])
+            s1_label_added = False
             for start, end in zip(s1_starts, s1_ends):
                 ax.axvspan(
                     start/sample_rate, end/sample_rate,
-                    color='red', alpha=0.2, label='S1'
+                    color='red', alpha=0.2, label='S1' if not s1_label_added else None
                 )
+                s1_label_added = True
             
             # Plot S2 segments
             s2_starts = segments.get('s2_starts', [])
             s2_ends = segments.get('s2_ends', [])
+            s2_label_added = False
             for start, end in zip(s2_starts, s2_ends):
                 ax.axvspan(
                     start/sample_rate, end/sample_rate,
-                    color='green', alpha=0.2, label='S2'
+                    color='green', alpha=0.2, label='S2' if not s2_label_added else None
                 )
+                s2_label_added = True
             
             # Customize the plot
             ax.set_title('Heart Sound Segmentation')
@@ -229,15 +245,17 @@ class HeartSoundVisualizer:
             # Create custom legend
             from matplotlib.patches import Patch
             from matplotlib.lines import Line2D
-            legend_elements = [
-                Patch(facecolor='red', alpha=0.2, label='S1'),
-                Patch(facecolor='green', alpha=0.2, label='S2')
-            ]
-            # Add envelope to legend if it was plotted
-            if envelope_data is not None and len(np.asarray(envelope_data)) > 0 and len(np.asarray(envelope_data)) == len(signal):
+            legend_elements = []
+            if s1_label_added:
+                 legend_elements.append(Patch(facecolor='red', alpha=0.2, label='S1'))
+            if s2_label_added:
+                 legend_elements.append(Patch(facecolor='green', alpha=0.2, label='S2'))
+            
+            if plotted_envelope:
                 legend_elements.append(Line2D([0], [0], color='purple', linestyle='--', lw=2, label='Envelope'))
         
-            ax.legend(handles=legend_elements)
+            if legend_elements:
+                ax.legend(handles=legend_elements)
             
             plt.tight_layout()
             
@@ -250,12 +268,13 @@ class HeartSoundVisualizer:
                 
             if show:
                 plt.show()
-                
-            plt.close()
             
         except Exception as e:
             logger.error(f"Error generating segmentation plot: {e}")
-            raise
+            raise # Re-raise the exception after logging
+        finally:
+            if fig is not None:
+                plt.close(fig) # Ensure figure is closed
     
     def plot_envelope(
         self,

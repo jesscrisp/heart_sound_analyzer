@@ -1,0 +1,18 @@
+{
+  "audio": {
+    "target_sample_rate": 1000,
+    "low_cut_hz": 25,
+    "high_cut_hz": 150,
+    "filter_order": 4
+  },
+  "segmentation": {
+    "method": "peak_detection",
+    "params": {
+      "peak_prominence": 0.1,
+      "peak_distance_ms": 100
+    }
+  },
+  "output": {
+    "default_directory": "output_data"
+  }
+}

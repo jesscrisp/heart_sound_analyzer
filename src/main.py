@@ -7,9 +7,8 @@ import logging
 logger = logging.getLogger(__name__) # Define module-level logger for main.py
 
 # Configure logging as early as possible
-logging.basicConfig(level=logging.DEBUG, format='%(levelname)s:%(name)s:%(message)s') # Set global to DEBUG for testing
-logging.getLogger('heart_sound_analyzer.src.io').setLevel(logging.INFO)
-logging.getLogger('heart_sound_analyzer.src.segmentation').setLevel(logging.DEBUG) # Explicitly set segmentation to DEBUG
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s:%(name)s:%(filename)s:%(lineno)d:%(message)s') # Set global to DEBUG for testing
+# Allow basicConfig to control levels for child loggers by default
 
 
 from .config import load_config
