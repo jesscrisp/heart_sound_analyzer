@@ -1,0 +1,7 @@
+pyPCG>=0.0.4
+numpy>=1.21.0
+scipy>=1.7.0
+matplotlib>=3.4.0
+PyYAML>=6.0
+soundfile>=0.10.3
+pytest>=6.2.5

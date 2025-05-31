@@ -1,0 +1,58 @@
+# Heart Sound Analyzer Configuration
+
+audio:
+  sample_rate: 4000  # Target sample rate in Hz
+  normalize: True  # Normalize audio signals
+
+# Segmentation configuration
+segmentation:
+  # Available methods: 'peak_detection' or 'lr_hsmm'
+  method: 'peak_detection'
+  
+  # Heart rate constraints (used by peak detection)
+  min_heart_rate: 40    # Minimum expected heart rate in BPM
+  max_heart_rate: 200   # Maximum expected heart rate in BPM
+  
+  # Peak detection configuration
+  peak_detection:
+    start_drop: 0.8      # Threshold for peak start detection (0-1)
+    end_drop: 0.7        # Threshold for peak end detection (0-1)
+    peak_threshold: 0.1  # Minimum peak prominence (0-1)
+    peak_distance: 0.15  # Minimum distance between peaks (seconds)
+    peak_width: [0.01, 0.15]  # Min and max peak width in seconds
+  
+  # LR-HSMM model configuration
+  lr_hsmm:
+    model_path: 'models/lr_hsmm_model.json'  # Path to pre-trained model
+    state_mapping:  # Map state names to internal enum values
+      s1: 'S1'
+      s2: 'S2'
+      systole: 'SYSTOLE'
+      diastole: 'DIASTOLE'
+
+# Output configuration
+output:
+  save_plots: True      # Save segmentation plots
+  plot_format: 'png'    # Image format for saved plots ('png' or 'pdf')
+  show_plots: False    # Display plots interactively
+  debug: False         # Enable debug output
+
+# Paths (relative to project root)
+paths:
+  data_raw: 'data/raw'               # Raw audio files
+  data_processed: 'data/processed'     # Processed audio files
+  results: 'data/results'              # Analysis results and outputs
+  models: 'models'                    # Pre-trained model files
+
+# Preprocessing configuration
+preprocessing:
+  envelope:
+    method: 'hilbert'     # Envelope method: 'hilbert' or 'rms'
+    window_size: 0.01    # Window size in seconds
+    power: 1             # Power for envelope calculation
+  normalize: True        # Normalize the signal after processing
+  filter:
+    enabled: True
+    lowcut: 25           # Hz
+    highcut: 200         # Hz
+    order: 4             # Filter order
