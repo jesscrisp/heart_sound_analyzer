@@ -27,38 +27,6 @@ class HeartSoundProcessor:
         self.audio_loader = AudioLoader(config)
         self.segmentation_config = config.get('segmentation', {})
     
-    def _preprocess_signal(self, signal: np.ndarray, sample_rate: float) -> np.ndarray:
-        """Apply preprocessing to the signal.
-        
-        Args:
-            signal: Raw audio signal
-            sample_rate: Sample rate in Hz
-            
-        Returns:
-            Preprocessed signal
-        """
-        # Simple bandpass filtering
-        from scipy import signal as sp_signal
-        
-        # Get filter parameters from config or use defaults
-        lowcut = self.config.get('preprocessing', {}).get('lowcut', 25)
-        highcut = self.config.get('preprocessing', {}).get('highcut', 400)
-        fs = sample_rate
-        
-        # Design bandpass filter
-        nyq = 0.5 * fs
-        low = lowcut / nyq
-        high = highcut / nyq
-        b, a = sp_signal.butter(4, [low, high], btype='band')
-        
-        # Apply filter
-        filtered = sp_signal.filtfilt(b, a, signal)
-        
-        # Normalize
-        if self.config.get('preprocessing', {}).get('normalize', True):
-            filtered = filtered / np.max(np.abs(filtered))
-            
-        return filtered
     
     def process_file(self, file_path: str) -> Dict[str, Any]:
         """Process a heart sound audio file end-to-end.
@@ -105,8 +73,6 @@ class HeartSoundProcessor:
                 'sample_rate': sample_rate,
                 'segments': segments,
                 'heart_cycles': heart_cycles,
-                'signal_object': signal,  # Keep the full signal object for reference
-                'processed_object': processed_signal  # Keep the processed signal object
             }
         
         except Exception as e:

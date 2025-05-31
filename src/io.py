@@ -7,16 +7,22 @@ from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, Union
 import numpy as np
 from functools import partial
+import sys
 
 # Get module logger first
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.propagate = True # Ensure it propagates to root logger
 
 # Try to import pyPCG modules with fallbacks
 try:
     from pyPCG import pcg_signal
-    from pyPCG.io import read_signal_file, write_signal_file
-    from pyPCG.preprocessing import resample, filter as pcg_filter, normalize as pcg_normalize, envelope as pcg_envelope
+    from pyPCG.io import read_signal_file
+    from pyPCG.preprocessing import resample, filter as pcg_filter, envelope as pcg_envelope
+    from pyPCG import normalize as pcg_normalize
+    logger.info("All pyPCG modules for io.py appear to be imported.")
     HAS_PYPCG = True
+    logger.info("pyPCG successfully confirmed in io.py. Using pyPCG for I/O and preprocessing.")
 except ImportError as e:
     logger.debug(f"pyPCG import failed: {e}")
     try:

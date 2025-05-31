@@ -2,6 +2,15 @@
 import argparse
 from pathlib import Path
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__) # Define module-level logger for main.py
+
+# Configure logging as early as possible
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s:%(name)s:%(message)s') # Set global to DEBUG for testing
+logging.getLogger('heart_sound_analyzer.src.io').setLevel(logging.INFO)
+logging.getLogger('heart_sound_analyzer.src.segmentation').setLevel(logging.DEBUG) # Explicitly set segmentation to DEBUG
+
 
 from .config import load_config
 from .processor import HeartSoundProcessor
@@ -16,6 +25,11 @@ def parse_arguments():
                         help='Path to config file')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory for results')
+    parser.add_argument('--segmentation-method', type=str, default=None,
+                        choices=['peak_detection', 'lr_hsmm'],
+                        help='Segmentation method to use (peak_detection or lr_hsmm). Overrides config if set.')
+    parser.add_argument('--model-path', type=str, default=None,
+                        help='Path to the LR-HSMM model file. Used if segmentation_method is lr_hsmm. Overrides config if set.')
     return parser.parse_args()
 
 def main():
@@ -24,6 +38,26 @@ def main():
     
     # Load configuration
     config = load_config(args.config)
+
+    # Ensure segmentation_config and params exist
+    if 'segmentation_config' not in config:
+        config['segmentation_config'] = {}
+    if 'params' not in config['segmentation_config']:
+        config['segmentation_config']['params'] = {}
+
+    # Override segmentation method from command line if provided
+    if args.segmentation_method:
+        config['segmentation_config']['method'] = args.segmentation_method
+        logger.info(f"Using segmentation method from command line: {args.segmentation_method}")
+
+    # Override model path from command line if provided and method is lr_hsmm
+    # Ensure we check the effective method (either from config or overridden by CLI)
+    effective_segmentation_method = config['segmentation_config'].get('method')
+    if args.model_path and effective_segmentation_method == 'lr_hsmm':
+        config['segmentation_config']['params']['model_path'] = args.model_path
+        logger.info(f"Using LR-HSMM model path from command line: {args.model_path}")
+    elif args.model_path and effective_segmentation_method != 'lr_hsmm':
+        logger.warning(f"--model-path ('{args.model_path}') provided, but segmentation method is not 'lr_hsmm'. It will be ignored.")
     
     # Initialize components
     processor = HeartSoundProcessor(config)

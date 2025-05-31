@@ -193,7 +193,18 @@ class HeartSoundVisualizer:
             
             # Plot the signal
             self.plot_signal(signal, sample_rate, ax=ax, **kwargs)
-            
+
+            # Plot the envelope if available
+            envelope_data = segments.get('envelope')
+            if envelope_data is not None and len(np.asarray(envelope_data)) > 0:
+                envelope_data = np.asarray(envelope_data)
+                time_axis_env = np.linspace(0, len(signal) / sample_rate, num=len(signal))
+                # Ensure envelope_data has the same length as time_axis_env for plotting
+                if len(envelope_data) == len(time_axis_env):
+                    ax.plot(time_axis_env, envelope_data, color='purple', linestyle='--', alpha=0.7, label='Envelope')
+                else:
+                    logger.warning(f"Envelope length ({len(envelope_data)}) does not match signal length ({len(time_axis_env)}). Skipping envelope plot.")
+        
             # Plot S1 segments
             s1_starts = segments.get('s1_starts', [])
             s1_ends = segments.get('s1_ends', [])
@@ -217,10 +228,15 @@ class HeartSoundVisualizer:
             
             # Create custom legend
             from matplotlib.patches import Patch
+            from matplotlib.lines import Line2D
             legend_elements = [
                 Patch(facecolor='red', alpha=0.2, label='S1'),
                 Patch(facecolor='green', alpha=0.2, label='S2')
             ]
+            # Add envelope to legend if it was plotted
+            if envelope_data is not None and len(np.asarray(envelope_data)) > 0 and len(np.asarray(envelope_data)) == len(signal):
+                legend_elements.append(Line2D([0], [0], color='purple', linestyle='--', lw=2, label='Envelope'))
+        
             ax.legend(handles=legend_elements)
             
             plt.tight_layout()
