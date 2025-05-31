@@ -14,12 +14,28 @@ logger = logging.getLogger(__name__)
 
 # Try to import pyPCG
 try:
+    print("[IMPORT DEBUG] Attempting: import pyPCG")
     import pyPCG
+    print("[IMPORT DEBUG] Success: import pyPCG")
+
+    print("[IMPORT DEBUG] Attempting: from pyPCG import normalize, plot")
     from pyPCG import normalize, plot
+    print("[IMPORT DEBUG] Success: from pyPCG import normalize, plot")
+
+    print("[IMPORT DEBUG] Attempting: from pyPCG.preprocessing import envelope as pypcg_envelope_func")
+    from pyPCG.preprocessing import envelope as pypcg_envelope_func
+    print("[IMPORT DEBUG] Success: from pyPCG.preprocessing import envelope")
+
+
+    logger.info("All pyPCG modules for segmentation.py appear to be imported.")
     HAS_PYPCG = True
-except ImportError:
+    print("[IMPORT DEBUG] HAS_PYPCG set to True")
+    logger.info("pyPCG successfully confirmed in segmentation.py. Using pyPCG for segmentation.")
+except ImportError as e_import:
+    print(f"[IMPORT DEBUG] ImportError occurred: {e_import}")
     HAS_PYPCG = False
-    logger.warning("pyPCG module not found. Some functionality may be limited.")
+    print("[IMPORT DEBUG] HAS_PYPCG set to False due to ImportError")
+    logger.warning(f"pyPCG module not found or import error: {e_import}. Some functionality may be limited.")
 
 # Try to import scipy for fallback methods
 try:
@@ -34,49 +50,109 @@ PCGSignal = Any  # Type alias for PCG signal objects
 ArrayLike = Union[np.ndarray, List[float]]
 
 def _extract_envelope(signal: Union[PCGSignal, ArrayLike], fs: float = 1000.0) -> np.ndarray:
-    """Extract envelope from PCG signal.
+    """Extract envelope from PCG signal, prioritizing pyPCG's method.
     
     Args:
-        signal: Input PCG signal (PCGSignal object or numpy array)
-        fs: Sampling frequency for envelope extraction
+        signal: Input PCG signal (pyPCG PCGSignal object or numpy array)
+        fs: Sampling frequency
         
     Returns:
         Extracted and normalized envelope as numpy array
     """
+    print("[DEBUG PRINT] _extract_envelope called.") # New print
     try:
-        # Try pyPCG's envelope extraction if available
-        if HAS_PYPCG and hasattr(signal, 'get_envelope'):
+        print(f"[DEBUG PRINT] _extract_envelope: HAS_PYPCG = {HAS_PYPCG}") # New print
+        if HAS_PYPCG:
             try:
-                env = signal.get_envelope()
-                if env is not None:
-                    return env
+                pcg_signal_obj = None
+                # Ensure signal is a pyPCG PCGSignal object
+                if isinstance(signal, pyPCG.pcg_signal):
+                    pcg_signal_obj = signal
+                    # Update fs if the object has its own fs, to ensure consistency
+                    if hasattr(pcg_signal_obj, 'fs') and pcg_signal_obj.fs is not None:
+                        fs = pcg_signal_obj.fs 
+                elif hasattr(signal, 'data') and hasattr(signal, 'fs'): # Check for generic PCG-like structure
+                    # Attempt to create pyPCG.PCGSignal object, assuming signal.data is array-like
+                    pcg_signal_obj = pyPCG.pcg_signal(data=np.asarray(signal.data), fs=signal.fs)
+                    fs = signal.fs # Use fs from the object
+                else: # Assuming it's a numpy array or list
+                    signal_data_arr = np.asarray(signal)
+                    print("[DEBUG PRINT] _extract_envelope: Creating pyPCG.PCGSignal object from np.array.") # New print
+                    pcg_signal_obj = pyPCG.pcg_signal(data=signal_data_arr, fs=fs)
+                    print("[DEBUG PRINT] _extract_envelope: pyPCG.PCGSignal object created.") # New print
+
+                # Use pyPCG's envelope function
+                print(f"[DEBUG PRINT] _extract_envelope: Calling pypcg_envelope_func with object type: {type(pcg_signal_obj)}") # New print
+                envelope_pcg_signal = pypcg_envelope_func(pcg_signal_obj)
+                print("[DEBUG PRINT] _extract_envelope: pypcg_envelope_func returned.") # New print
+                env = np.asarray(envelope_pcg_signal.data)
+
+                # Normalize to [0, 1]
+                if env.size > 0 and np.max(env) > 0:
+                    env = env / np.max(env)
+                elif env.size > 0: # All zeros or negative (though envelope should be non-negative)
+                    env = np.zeros_like(env)
+                # If env is empty, it will be returned as such
+                
+                print("[DEBUG PRINT] Attempting to log pyPCG envelope success...") # Temporary print for debugging
+                logger.debug("Successfully extracted envelope using pyPCG.")
+                return env
             except Exception as e:
-                logger.debug(f"pyPCG envelope extraction failed, falling back to custom method: {e}")
+                print(f"[DEBUG PRINT] _extract_envelope: EXCEPTION in pyPCG path: {e}") # New print
+                logger.warning(f"pyPCG envelope extraction failed: {e}. Falling back to custom method.")
         
-        # Extract signal data if it's a PCGSignal object
-        signal_data = signal.signal if hasattr(signal, 'signal') else np.asarray(signal)
+        # Fallback: Custom envelope extraction (absolute value + moving average)
+        logger.debug("Using custom envelope extraction method.")
         
-        # Simple envelope extraction using absolute value + moving average
-        env = np.abs(signal_data)
+        current_signal_data = None
+        if HAS_PYPCG and isinstance(signal, pyPCG.pcg_signal):
+            current_signal_data = np.asarray(signal.data)
+        elif hasattr(signal, 'data') and hasattr(signal, 'fs'): # Check for generic PCG-like structure
+            current_signal_data = np.asarray(signal.data)
+        else: # Assume it's a numpy array or list
+            current_signal_data = np.asarray(signal)
+
+        if current_signal_data.size == 0:
+            logger.warning("Input signal for custom envelope extraction is empty.")
+            return np.array([])
+            
+        env = np.abs(current_signal_data)
         
-        # Apply moving average for smoothing using scipy if available
         if HAS_SCIPY:
-            window_size = int(0.02 * fs)  # 20ms window
-            if window_size > 1:
+            window_size = int(0.02 * fs)  # 20ms window for smoothing
+            if window_size > 1 and env.size >= window_size:
                 window = np.ones(window_size) / window_size
                 env = convolve(env, window, mode='same')
-        
-        # Normalize to [0, 1]
-        if np.max(env) > 0:
+            elif window_size > 1 and env.size < window_size:
+                logger.debug(f"Signal length ({env.size}) too short for moving average window ({window_size}). Skipping.")
+
+        if env.size > 0 and np.max(env) > 0:
             env = env / np.max(env)
+        elif env.size > 0:
+            env = np.zeros_like(env)
             
         return env
         
     except Exception as e:
-        logger.error(f"Error extracting envelope: {e}")
-        # Fallback to absolute value
-        signal_data = signal.signal if hasattr(signal, 'signal') else signal
-        return np.abs(np.asarray(signal_data))
+        logger.error(f"Critical error in _extract_envelope: {e}", exc_info=True)
+        # Ultimate fallback: simple normalized absolute value if all else fails
+        ultimate_fallback_data = None
+        if HAS_PYPCG and isinstance(signal, pyPCG.pcg_signal):
+            ultimate_fallback_data = np.asarray(signal.data)
+        elif hasattr(signal, 'data') and hasattr(signal, 'fs'):
+            ultimate_fallback_data = np.asarray(signal.data)
+        else:
+            ultimate_fallback_data = np.asarray(signal)
+        
+        if ultimate_fallback_data.size == 0:
+            return np.array([])
+
+        abs_env = np.abs(ultimate_fallback_data)
+        if abs_env.size > 0 and np.max(abs_env) > 0:
+            return abs_env / np.max(abs_env)
+        elif abs_env.size > 0:
+            return np.zeros_like(abs_env)
+        return np.array([]) # Should not be reached if ultimate_fallback_data.size > 0
 
 
 def _segment_with_peak_detection(
@@ -174,26 +250,44 @@ def _segment_with_peak_detection(
                 'envelope': env.tolist()
             }
         
-        # Simple peak classification based on alternating pattern
-        if len(peaks) > 1:
-            # Sort peaks by amplitude
-            peak_amplitudes = env[peaks]
-            sorted_idx = np.argsort(peak_amplitudes)[::-1]  # Sort descending
-            
-            # Classify as S1 and S2 based on position and amplitude
-            s1_peaks = []
-            s2_peaks = []
-            for i, idx in enumerate(peaks[sorted_idx]):
-                if i % 2 == 0:
-                    s1_peaks.append(idx)
-                else:
-                    s2_peaks.append(idx)
+        # Classify S1 and S2 peaks based on inter-peak intervals
+        # This aims to emulate the principle of pyPCG's peak_sort_diff:
+        # S1-S2 intervals are typically shorter than S2-S1 intervals.
+        s1_peaks = []
+        s2_peaks = []
+
+        if len(peaks) > 0:
+            if len(peaks) == 1:
+                s1_peaks.append(peaks[0]) # Assume a single detected peak is S1
+            else:
+                # Determine if the sequence likely starts with S1 or S2
+                # This is based on comparing the first two inter-peak intervals.
+                starts_with_s1 = True # Default assumption: sequence starts with S1
+                if len(peaks) >= 3: # Need at least 3 peaks to have two intervals
+                    interval_A = peaks[1] - peaks[0] # Duration between peak 0 and peak 1
+                    interval_B = peaks[2] - peaks[1] # Duration between peak 1 and peak 2
                     
-            s1_peaks = np.sort(s1_peaks)
-            s2_peaks = np.sort(s2_peaks)
-        else:
-            s1_peaks = np.array(peaks) if len(peaks) > 0 else np.array([])
-            s2_peaks = np.array([])
+                    # Heuristic: If interval_A is significantly longer than interval_B,
+                    # it suggests interval_A is diastolic (S2-S1) and interval_B is systolic (S1-S2).
+                    # This implies the sequence starts with S2 (peaks[0] is S2).
+                    # The ratio threshold can be tuned via kwargs if needed.
+                    ratio_threshold = kwargs.get('diastolic_systolic_ratio_threshold', 1.2)
+                    if interval_A > interval_B * ratio_threshold:
+                        starts_with_s1 = False
+                
+                # Assign peaks by alternating, starting with the determined label for the first peak
+                current_label_is_s1 = starts_with_s1
+                for peak_location in peaks:
+                    if current_label_is_s1:
+                        s1_peaks.append(peak_location)
+                    else:
+                        s2_peaks.append(peak_location)
+                    current_label_is_s1 = not current_label_is_s1 # Alternate for the next peak
+        
+        # Ensure outputs are sorted numpy arrays (though `peaks` was already sorted)
+        s1_peaks = np.sort(np.array(s1_peaks, dtype=int))
+        s2_peaks = np.sort(np.array(s2_peaks, dtype=int))
+        # End of new S1/S2 classification logic
         
         # Estimate segment boundaries based on peak locations
         def estimate_segments(peak_indices, signal_length):
@@ -283,7 +377,17 @@ def create_heart_cycle_segments(segments: Dict[str, np.ndarray]) -> List[Dict[st
         # Calculate durations and intervals
         s1_durations = s1_ends - s1_starts
         s2_durations = s2_ends - s2_starts
-        s1s2_intervals = s2_starts - s1_starts
+        # Determine the number of S1-S2 pairs we can form
+        _common_len_s1s2 = min(len(s1_starts), len(s2_starts))
+        
+        # Calculate s1s2_intervals only for these common pairs.
+        # Note: This specific interval (S1_start to S2_start) might not be the
+        # standard definition of a systolic interval (which is typically S1_end to S2_start),
+        # but we are preserving the original variable's intent for now to fix the crash.
+        if _common_len_s1s2 > 0:
+            s1s2_intervals = s2_starts[:_common_len_s1s2] - s1_starts[:_common_len_s1s2]
+        else:
+            s1s2_intervals = np.array([]) # No pairs to calculate intervals for
         
         # Create cycles by pairing S1 and S2 segments
         for i in range(min(len(s1_starts), len(s2_starts))):
@@ -351,9 +455,11 @@ def segment_heart_sounds(signal: Union[PCGSignal, np.ndarray], method: str = 'pe
         
         # Call the appropriate segmentation method
         if method == 'peak_detection':
-            result = _segment_with_peak_detection(signal, fs=fs, **kwargs)
+            other_kwargs = {k: v for k, v in kwargs.items() if k != 'fs'}
+            result = _segment_with_peak_detection(signal, fs=fs, **other_kwargs)
         elif method == 'lr_hsmm':
-            result = _segment_with_lr_hsmm(signal, fs=fs, **kwargs)
+            other_kwargs = {k: v for k, v in kwargs.items() if k != 'fs'}
+            result = _segment_with_lr_hsmm(signal, fs=fs, **other_kwargs)
             
         # Add cycles if requested
         if kwargs.get('include_cycles', True):
@@ -404,10 +510,10 @@ def _segment_with_lr_hsmm(
     if not HAS_PYPCG:
         raise ImportError("pyPCG is required for LR-HSMM segmentation")
         
-    if not model_path or not os.path.isfile(model_path):
-        raise ValueError(f"Valid model_path is required for LR-HSMM segmentation. Got: {model_path}")
-    
     try:
+        if not model_path or not os.path.isfile(model_path):
+            raise ValueError(f"Valid model_path is required for LR-HSMM segmentation. Got: {model_path}")
+        
         # Import required pyPCG modules
         from pyPCG.segment import load_hsmm, heart_state
         from pyPCG.pcg_signal import PCG
@@ -416,7 +522,6 @@ def _segment_with_lr_hsmm(
         # Create PCG signal object if needed
         if hasattr(signal, 'data') and hasattr(signal, 'fs'):
             pcg_signal = signal
-            fs = pcg_signal.fs  # Use the signal's fs if it's a PCG object
         else:
             # Create PCG signal object from numpy array
             pcg_signal = PCG(data=np.asarray(signal, dtype=np.float64), fs=fs)
