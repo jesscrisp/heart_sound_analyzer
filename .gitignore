@@ -45,8 +45,15 @@ ENV/
 # OS generated files
 .DS_Store
 .DS_Store?
+
+# Project-specific output directory (relative to this .gitignore file)
+../output/
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
 Thumbs.db
+data/processed/test_output_main_after_refactor/103_1305031931979_B_segmentation_report.csv
+data/processed/test_output_main_after_refactor/103_1305031931979_B_segmentation.png
+data/processed/test_output_main_cleanup/103_1305031931979_D3_segmentation.png
+data/processed/test_output_main_cleanup/109_1305653646620_C_segmentation.png

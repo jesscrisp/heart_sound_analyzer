@@ -3,23 +3,46 @@ Heart Sound Processor module for coordinating the heart sound analysis pipeline.
 """
 import logging
 import numpy as np
-from typing import Dict, Any, Optional, Tuple, Union
+from typing import Dict, Any, Optional, Tuple, Union, List
 from pathlib import Path
 
 # Import internal modules
 from .segmentation import segment_heart_sounds, create_heart_cycle_segments
-from .io import AudioLoader, HAS_PYPCG # Import HAS_PYPCG
-import numpy as np
-from pyPCG.segment import adv_peak # For the quick test, HAS_PYPCG
-from pyPCG import pcg_signal # For type checking and creating objects
-from pyPCG.preprocessing import filter as pyPCG_filter
-from pyPCG.preprocessing import wt_denoise_sth
-from pyPCG.preprocessing import process_pipeline
-from pyPCG import normalize as pyPCG_normalize
-from pyPCG.preprocessing import homomorphic as pyPCG_homomorphic_envelope
+from .io import AudioLoader, HAS_PYPCG, PCGSignalType # Import shared status and type
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Initialize pyPCG components to None. They will be imported if HAS_PYPCG is True.
+pcg_signal = None
+pyPCG_filter = None
+wt_denoise_sth = None
+process_pipeline = None
+pyPCG_normalize = None
+pyPCG_homomorphic_envelope = None
+adv_peak = None # Example, if used from pyPCG.segment
+
+PROCESSOR_HAS_PYPCG_COMPONENTS = False # Local status for processor's needs
+
+if HAS_PYPCG:
+    try:
+        from pyPCG import pcg_signal
+        from pyPCG.preprocessing import filter as pyPCG_filter
+        from pyPCG.preprocessing import wt_denoise_sth
+        from pyPCG.preprocessing import process_pipeline
+        from pyPCG import normalize as pyPCG_normalize
+        from pyPCG.preprocessing import homomorphic as pyPCG_homomorphic_envelope
+        # from pyPCG.segment import adv_peak # If explicitly needed
+
+        # Module-level variables (pyPCG_filter, wt_denoise_sth, etc.) are now directly assigned by the imports
+        
+        PROCESSOR_HAS_PYPCG_COMPONENTS = True
+        logger.info("Processor successfully imported required pyPCG submodules.")
+    except ImportError as e_proc_pcg:
+        logger.error(f"Processor HAS_PYPCG was True, but failed to import specific pyPCG submodules: {e_proc_pcg}. pyPCG processing will be disabled for processor.")
+        PROCESSOR_HAS_PYPCG_COMPONENTS = False
+else:
+    logger.info("Processor: HAS_PYPCG from io.py is False. pyPCG features will be unavailable.")
 
 class HeartSoundProcessor:
     """Coordinates the heart sound analysis pipeline using pyPCG."""
@@ -37,8 +60,6 @@ class HeartSoundProcessor:
     
     def process_file(self, file_path: str) -> Dict[str, Any]:
         """Process a heart sound audio file end-to-end.
-        seg_logger_proc = logging.getLogger('heart_sound_analyzer.src.segmentation')
-        print(f"DIAGNOSTIC (processor.py - process_file start): Segmentation logger disabled status: {seg_logger_proc.disabled}")
 
     Prioritizes pyPCG for preprocessing. If any pyPCG processing step fails
     or components are unavailable, segmentation is not attempted.
@@ -62,6 +83,7 @@ class HeartSoundProcessor:
         heart_cycles: List[Dict[str, Any]] = []
         status_message = "Processing initiated."
         processing_pipeline_successful = False
+        envelope_extraction_successful = False
         segmentation_successful = False
 
         try:
@@ -70,20 +92,9 @@ class HeartSoundProcessor:
             loaded_signal_or_data = self.audio_loader.load_audio(file_path)
             status_message = "Audio loading attempted."
 
-            # Define pyPCG pre-conditions
-            pyPCG_components_available = (
-                HAS_PYPCG and 
-                pyPCG_filter is not None and 
-                wt_denoise_sth is not None and 
-                pyPCG_normalize is not None and 
-                pyPCG_homomorphic_envelope is not None and 
-                process_pipeline is not None and 
-                pcg_signal is not None
-            )
-            
-            is_pcg_object = isinstance(loaded_signal_or_data, pcg_signal)
+            is_pcg_object = pcg_signal is not None and isinstance(loaded_signal_or_data, pcg_signal)
 
-            if pyPCG_components_available and is_pcg_object:
+            if PROCESSOR_HAS_PYPCG_COMPONENTS and is_pcg_object:
                 pcg_audio_obj: pcg_signal = loaded_signal_or_data # type: ignore
                 status_message = "pyPCG components available and audio loaded as pcg_signal."
                 logger.info(status_message)
@@ -141,19 +152,9 @@ class HeartSoundProcessor:
                     extracted_envelope_data = None
                     processing_pipeline_successful = False
             
-            else: # pyPCG pre-conditions not met
-                if not HAS_PYPCG:
-                    status_message = "pyPCG components not available (HAS_PYPCG is False). Cannot proceed with pyPCG processing."
-                elif not pyPCG_components_available:
-                    status_message = "One or more required pyPCG functions (filter, denoise, normalize, envelope, pipeline) are not available. Cannot proceed."
-                elif not is_pcg_object:
-                    status_message = f"Audio loaded as {type(loaded_signal_or_data)}, not pcg_signal. pyPCG pipeline requires pcg_signal object."
-                    # If loaded_signal_or_data is a tuple (numpy_array, fs) from AudioLoader fallback
-                    if isinstance(loaded_signal_or_data, tuple) and len(loaded_signal_or_data) == 2:
-                        raw_signal_data, sr_val = loaded_signal_or_data
-                        if isinstance(raw_signal_data, np.ndarray) and isinstance(sr_val, (int, float)):
-                            sample_rate = int(sr_val)
-                logger.warning(status_message)
+            else: # PROCESSOR_HAS_PYPCG_COMPONENTS is False or audio not loaded as pcg_signal
+                logger.warning("Processor's pyPCG components not available (PROCESSOR_HAS_PYPCG_COMPONENTS is False) or audio not loaded as pcg_signal. Cannot proceed with pyPCG processing.")
+                status_message = "Processor's pyPCG components not available or audio not loaded as pcg_signal. Cannot proceed with pyPCG processing."
                 processing_pipeline_successful = False
                 # Ensure raw_signal_data and sample_rate are populated if audio was loaded as numpy array by AudioLoader
                 if isinstance(loaded_signal_or_data, tuple) and len(loaded_signal_or_data) == 2:
@@ -228,10 +229,8 @@ class HeartSoundProcessor:
         # Prepare final results dictionary
         final_results = {
             'file_path': file_path,
-            'signal': raw_signal_data,  # For main.py plotting/saving
-            'processed': processed_signal_data,  # For main.py plotting/saving
-            'raw_signal_data': raw_signal_data, # Keep for other potential uses
-            'processed_signal_for_segmentation': processed_signal_data, # Keep for clarity if segmentation needs specific version
+            'raw_audio_data': raw_signal_data,  # Original raw audio data, previously 'signal' or 'raw_signal_data'
+            'processed_audio_data': processed_signal_data,  # Audio data after pyPCG processing, previously 'processed' or 'processed_signal_for_segmentation'
             'sample_rate': sample_rate,
             'envelope': extracted_envelope_data,
             'segments': segments,
@@ -245,7 +244,7 @@ class HeartSoundProcessor:
         logger.info(f"Finished processing for file: {file_path}. Status: {status_message}")
         return final_results
 
-    def _extract_features(self, signal, segments):
+    def _extract_features(self, signal, segments) -> Dict[str, Any]:
         """Extract features from the segmented signal.
         
         Args:
@@ -258,7 +257,7 @@ class HeartSoundProcessor:
         # Placeholder for feature extraction logic
         return {}
         
-    def batch_process(self, file_paths):
+    def batch_process(self, file_paths) -> List[Dict[str, Any]]:
         """Process multiple audio files.
         
         Args:

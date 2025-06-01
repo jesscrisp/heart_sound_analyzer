@@ -17,7 +17,7 @@ segmentation:
   peak_detection:
     start_drop: 0.8      # Threshold for peak start detection (0-1)
     end_drop: 0.7        # Threshold for peak end detection (0-1)
-    peak_threshold: 0.1  # Minimum peak prominence (0-1)
+    peak_threshold: 0.5  # Minimum peak prominence (0-1)
     peak_distance: 0.15  # Minimum distance between peaks (seconds)
     peak_width: [0.01, 0.15]  # Min and max peak width in seconds
   
