@@ -19,7 +19,6 @@ from pyPCG import normalize as pyPCG_normalize
 from pyPCG.preprocessing import homomorphic as pyPCG_homomorphic_envelope
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class HeartSoundProcessor:
@@ -38,6 +37,8 @@ class HeartSoundProcessor:
     
     def process_file(self, file_path: str) -> Dict[str, Any]:
         """Process a heart sound audio file end-to-end.
+        seg_logger_proc = logging.getLogger('heart_sound_analyzer.src.segmentation')
+        print(f"DIAGNOSTIC (processor.py - process_file start): Segmentation logger disabled status: {seg_logger_proc.disabled}")
 
     Prioritizes pyPCG for preprocessing. If any pyPCG processing step fails
     or components are unavailable, segmentation is not attempted.
@@ -114,54 +115,27 @@ class HeartSoundProcessor:
                     logger.info("pyPCG envelope extraction applied.")
                     if extracted_envelope_data is not None and extracted_envelope_data.size > 0:
                         logger.info(f"Envelope stats: min={np.min(extracted_envelope_data)}, max={np.max(extracted_envelope_data)}, shape={extracted_envelope_data.shape}, dtype={extracted_envelope_data.dtype})")
+                        envelope_extraction_successful = True # Set flag here
                         if np.min(extracted_envelope_data) < 0:
                             logger.error("CRITICAL ERROR: Envelope contains negative values!")
                     elif extracted_envelope_data is None or extracted_envelope_data.size == 0:
                         logger.warning("Envelope data is None or empty after extraction.")
+                        envelope_extraction_successful = False # Explicitly false
 
-                    # Quick Test for pyPCG functions directly after envelope extraction (USER'S IMPROVED VERSION)
-                    if extracted_envelope_data is not None and sample_rate is not None:
-                        print(f"\n🧪 TESTING (processor.py): Envelope shape = {extracted_envelope_data.shape}")
-                        print(f"🧪 TESTING (processor.py): Envelope range = [{np.min(extracted_envelope_data):.6f}, {np.max(extracted_envelope_data):.6f}]")
-                        print(f"🧪 TESTING (processor.py): fs = {sample_rate} (Note: fs is not used by adv_peak directly)")
-
-                        # Test adv_peak with correct signature
-                        try:
-                            print(f"🧪 TESTING (processor.py): Calling adv_peak WITHOUT fs parameter (using default or percent_th if provided)... on envelope of type {type(extracted_envelope_data)} and dtype {extracted_envelope_data.dtype}")
-                            # Using a lenient percent_th for testing, similar to segmentation debug
-                            test_percent_th_proc = 0.3 
-                            # Wrap the envelope numpy array in a pcg_signal object as adv_peak expects
-                            envelope_pcg_for_test = pcg_signal(extracted_envelope_data, fs=sample_rate)
-                            print(f"🧪 TESTING (processor.py): Calling adv_peak with pcg_signal object (fs={sample_rate}, data_shape={extracted_envelope_data.shape}) and percent_th={test_percent_th_proc}")
-                            result = adv_peak(envelope_pcg_for_test, percent_th=test_percent_th_proc)
-                            print(f"🧪 TESTING (processor.py): adv_peak raw result: {result}")
-                            
-                            # If result is a tuple, get the peaks (typically the second element)
-                            if isinstance(result, tuple):
-                                peaks = result[1] if len(result) > 1 else result[0]
-                            else:
-                                peaks = result # Assuming result itself is the array of peaks
-                            
-                            # Ensure peaks is a numpy array for len() and slicing
-                            if not isinstance(peaks, np.ndarray):
-                                peaks = np.array(peaks)
-                                
-                            print(f"🧪 TESTING (processor.py): Found {len(peaks)} peaks: {peaks[:20]}...")
-                            
-                        except Exception as test_error:
-                            logger.error(f"🧪 TESTING (processor.py): adv_peak test failed: {test_error}", exc_info=True)
-                        print("--- End of Quick Test (processor.py) ---\n")
-                    else:
-                        print("🧪 TESTING (processor.py): Envelope data or fs is None, skipping direct pyPCG test.")
 
                     processed_signal_data = processed_pcg_obj.data
-                    processing_pipeline_successful = True
-                    status_message = "pyPCG processing pipeline successful."
-                    logger.info(status_message)
+                    if envelope_extraction_successful:
+                        processing_pipeline_successful = True
+                        status_message += "pyPCG core processing and envelope extraction applied."
+                        logger.info("pyPCG core processing and envelope extraction applied.")
+                    else:
+                        processing_pipeline_successful = False # Envelope extraction failed
+                        status_message += "pyPCG core processing applied, but envelope extraction failed."
+                        logger.warning("pyPCG core processing applied, but envelope extraction failed.")
 
                 except Exception as e_proc:
                     logger.error(f"Error during pyPCG processing pipeline: {e_proc}", exc_info=True)
-                    status_message = f"pyPCG processing pipeline failed: {str(e_proc)}"
+                    status_message += " pyPCG processing or envelope extraction failed, or pyPCG not available."
                     # raw_signal_data and sample_rate might still be set if error was mid-pipeline
                     processed_signal_data = None 
                     extracted_envelope_data = None
@@ -191,7 +165,7 @@ class HeartSoundProcessor:
             if processing_pipeline_successful and processed_signal_data is not None and sample_rate is not None:
                 logger.info("Proceeding to segmentation.")
                 try:
-                    segmentation_kwargs = self.config.get('segmentation_params', {})
+                    segmentation_kwargs = self.segmentation_config # Use the specific segmentation config loaded in __init__
                     segmentation_results = segment_heart_sounds(
                         processed_signal_data,
                         fs=sample_rate,
@@ -226,7 +200,7 @@ class HeartSoundProcessor:
                     }
                     
                     logger.info(f"Segmentation completed. Found {len(s1_starts)} S1 and {len(s2_starts)} S2 sounds.")
-                    heart_cycles = create_heart_cycle_segments(segments)
+                    heart_cycles = create_heart_cycle_segments(segmentation_results)
                     segmentation_successful = True
                     status_message += " Segmentation successful."
                 except Exception as e_seg:
@@ -264,6 +238,7 @@ class HeartSoundProcessor:
             'heart_cycles': heart_cycles,
             'status_message': status_message,
             'processing_pipeline_successful': processing_pipeline_successful,
+            'envelope_extraction_successful': envelope_extraction_successful,
             'segmentation_successful': segmentation_successful
         }
 

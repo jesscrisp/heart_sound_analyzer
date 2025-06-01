@@ -12,6 +12,8 @@ import inspect
 
 # Set up logging
 logger = logging.getLogger(__name__)
+print(f"SEGMENTATION_PY_TOP: Logger name is '{logger.name}', Effective level: {logger.getEffectiveLevel()}, Handlers: {logger.handlers}")
+logger.critical("SEGMENTATION_PY_TOP: CRITICAL LOG TEST FROM TOP OF MODULE")
 
 # pyPCG components and status
 HAS_PYPCG = False
@@ -20,10 +22,6 @@ pcg_signal = None
 adv_peak = None
 peak_sort_diff = None
 segment_peaks = None
-# LR-HSMM specific components
-load_hsmm = None
-heart_state = None
-convert_hsmm_states = None
 PCGSignalType = Any  # Default type hint for pyPCG signal objects
 
 try:
@@ -31,30 +29,23 @@ try:
     from pyPCG.segment import adv_peak as _imported_adv_peak_func
     from pyPCG.segment import peak_sort_diff as _imported_peak_sort_diff_func
     from pyPCG.segment import segment_peaks as _imported_segment_peaks_func
-    # LR-HSMM specific imports
-    from pyPCG.segment import load_hsmm as _imported_load_hsmm
-    from pyPCG.segment import heart_state as _imported_heart_state
-    from pyPCG.segment import convert_hsmm_states as _imported_convert_hsmm_states
 
     # Assign to module-level variables upon successful import
     pcg_signal = _imported_pcg_signal_class
     adv_peak = _imported_adv_peak_func
     peak_sort_diff = _imported_peak_sort_diff_func
     segment_peaks = _imported_segment_peaks_func
-    load_hsmm = _imported_load_hsmm
-    heart_state = _imported_heart_state
-    convert_hsmm_states = _imported_convert_hsmm_states
     
     HAS_PYPCG = True
     PCGSignalType = pcg_signal  # Update type hint
-    logger.info("Successfully imported all required pyPCG components for segmentation.")
+    logger.info("Successfully imported core pyPCG components for segmentation.")
 
 except ImportError as e:
     # HAS_PYPCG remains False. All component variables remain None.
     # PCGSignalType remains Any.
     logger.warning(
-        f"Could not import all required pyPCG components. Error: {e}. "
-        "Both peak detection and LR-HSMM segmentation methods will likely be unavailable or fail."
+        f"Could not import core pyPCG components. Error: {e}. "
+        "Peak detection segmentation method will likely be unavailable or fail."
     )
 
 # Definition for _pyPCG_SignalClass used for isinstance checks.
@@ -89,13 +80,13 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
         envelope_data: Optional pre-computed envelope (NumPy array).
         min_peak_distance: Minimum distance between peaks in seconds.
         **kwargs: Additional keyword arguments for peak detection and classification:
-            pycg_peak_prominence_ratio (float): Prominence ratio for pyPCG adv_peak (default 0.5).
+            peak_threshold (float): Threshold for pyPCG adv_peak (passed as percent_th, default 0.5).
+            hr_win_peak_sort (float): Window size for pyPCG peak_sort_diff (default 1.5).
+            dia_length_coeff_peak_sort (float): Diastolic length coefficient for pyPCG peak_sort_diff (default 1.8).
+            start_drop (float): Ratio of peak value to find segment start for segment_peaks (default 0.6).
+            end_drop (float): Ratio of peak value to find segment end for segment_peaks (default 0.6).
             peak_prominence (float): Relative prominence for SciPy/custom find_peaks (default 0.1 of max env value).
             diastolic_systolic_ratio_threshold (float): Threshold for classifying S1/S2 based on intervals (default 1.2).
-            s1_start_drop_ratio (float): Ratio of peak value to find S1 start (default 0.8).
-            s1_end_drop_ratio (float): Ratio of peak value to find S1 end (default 0.7).
-            s2_start_drop_ratio (float): Ratio of peak value to find S2 start (default 0.8).
-            s2_end_drop_ratio (float): Ratio of peak value to find S2 end (default 0.7).
 
     Returns:
         Dict[str, Any]: Dictionary containing segmentation results:
@@ -119,17 +110,36 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
         env = envelope_data # Directly use the validated envelope_data.
         print(f"🔍 SEGMENTATION: Envelope validated, shape = {env.shape}")
 
-        # pyPCG parameters from kwargs, with defaults if not provided
-        # These names are chosen to be distinct and descriptive for pyPCG usage.
-        percent_th_adv_peak = kwargs.get('peak_threshold', 0.5) # Use 'peak_threshold' from config
-        hr_win_peak_sort = kwargs.get('hr_win_peak_sort', 1.5) # Keep default or add to config if needed
-        dia_length_coeff_peak_sort = kwargs.get('dia_length_coeff_peak_sort', 1.8) # Keep default or add to config if needed
-        start_drop_segment_peaks = kwargs.get('start_drop', 0.6) # Use 'start_drop' from config
-        end_drop_segment_peaks = kwargs.get('end_drop', 0.6) # Use 'end_drop' from config
+        # Get peak detection parameters from the 'params' key in kwargs (populated by config.yaml)
+        peak_params_config = kwargs.get('params', {}).get('peak_detection', {})
+        logger.debug(f"Parameters from config for peak detection: {peak_params_config}")
 
-        logger.debug("--- pyPCG Peak Detection Debugging ---")
+        # Prepare arguments for pyPCG functions.
+        # If a parameter is in peak_params_config, it's used.
+        # Otherwise, the respective pyPCG function will use its internal default.
+        adv_peak_call_args = {}
+        if 'peak_threshold' in peak_params_config: # config.yaml key for adv_peak's percent_th
+            adv_peak_call_args['percent_th'] = peak_params_config['peak_threshold']
         
-        # Log signature of adv_peak
+        # For peak_sort_diff, pyPCG defaults are hr_win=1.5, dia_length_coeff=1.8
+        # If you want to control these via config, add 'hr_win' and 'dia_length_coeff' to config.yaml
+        peak_sort_diff_call_args = {}
+        if 'hr_win' in peak_params_config:
+            peak_sort_diff_call_args['hr_win'] = peak_params_config['hr_win']
+        if 'dia_length_coeff' in peak_params_config:
+            peak_sort_diff_call_args['dia_length_coeff'] = peak_params_config['dia_length_coeff']
+
+        # For segment_peaks, pyPCG defaults are start_drop=0.6, end_drop=0.6
+        segment_peaks_call_args = {}
+        if 'start_drop' in peak_params_config: # config.yaml key
+            segment_peaks_call_args['start_drop'] = peak_params_config['start_drop']
+        if 'end_drop' in peak_params_config: # config.yaml key
+            segment_peaks_call_args['end_drop'] = peak_params_config['end_drop']
+        
+        logger.debug(f"adv_peak_call_args: {adv_peak_call_args}")
+        logger.debug(f"peak_sort_diff_call_args: {peak_sort_diff_call_args}")
+        logger.debug(f"segment_peaks_call_args: {segment_peaks_call_args}")
+
         if HAS_PYPCG and adv_peak: # Check if adv_peak was successfully imported
             try:
                 logger.debug(f"Signature of pyPCG.adv_peak: {inspect.signature(adv_peak)}")
@@ -147,14 +157,13 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
             logger.error("pyPCG components are not available. This function should not have been called for pyPCG path.")
             raise ImportError("pyPCG components required for _segment_with_peak_detection are not available.")
 
-        # Simplified call to adv_peak
-        debug_percent_th = 0.3 # More lenient threshold for debugging
+        # Call to adv_peak using configured threshold
         print(f"🔍 SEGMENTATION_DEBUG: adv_peak signature: {inspect.signature(adv_peak)}")
         # Wrap the envelope numpy array in a pcg_signal object as adv_peak expects
         envelope_pcg_for_segmentation = pcg_signal(envelope_data, fs=fs)
-        print(f"🔍 SEGMENTATION: About to call adv_peak with pcg_signal object (fs={fs}, data_shape={envelope_data.shape}) and percent_th={debug_percent_th}...")
+        print(f"🔍 SEGMENTATION: About to call adv_peak with pcg_signal object (fs={fs}, data_shape={envelope_data.shape}) and args: {adv_peak_call_args}...")
         # adv_peak from pyPCG.segment does not take 'fs' argument.
-        _, peak_indices_pycg_debug = adv_peak(envelope_pcg_for_segmentation, percent_th=debug_percent_th)
+        _, peak_indices_pycg_debug = adv_peak(envelope_pcg_for_segmentation, **adv_peak_call_args)
         logger.info(f"Simplified adv_peak found {len(peak_indices_pycg_debug)} peaks: {peak_indices_pycg_debug}")
         print(f"🔍 SEGMENTATION: adv_peak found {len(peak_indices_pycg_debug)} peaks: {peak_indices_pycg_debug[:20]}...") # Print first 20 peaks
         
@@ -171,7 +180,7 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
             try:
                 print(f"🔍 SEGMENTATION_DEBUG: peak_sort_diff signature: {inspect.signature(peak_sort_diff)}")
                 print(f"🔍 SEGMENTATION: Calling peak_sort_diff with {len(peak_indices_pycg_debug)} peaks.")
-                s1_peaks_pycg_debug, s2_peaks_pycg_debug = peak_sort_diff(peak_indices_pycg_debug)
+                s1_peaks_pycg_debug, s2_peaks_pycg_debug = peak_sort_diff(peak_indices_pycg_debug, **peak_sort_diff_call_args)
                 print(f"🔍 SEGMENTATION: peak_sort_diff found {len(s1_peaks_pycg_debug)} S1 peaks and {len(s2_peaks_pycg_debug)} S2 peaks.")
                 print(f"🔍 SEGMENTATION_DEBUG: S1 peaks: {s1_peaks_pycg_debug[:20]}")
                 print(f"🔍 SEGMENTATION_DEBUG: S2 peaks: {s2_peaks_pycg_debug[:20]}")
@@ -203,10 +212,10 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
                 print(f"🔍 SEGMENTATION_DEBUG: Wrapped envelope in pcg_signal for segment_peaks. Type: {type(envelope_pcg)}, fs: {envelope_pcg.fs}, data shape: {envelope_pcg.data.shape}")
 
                 if len(s1_peaks_pycg_debug) > 0:
-                    print(f"🔍 SEGMENTATION: Calling segment_peaks for S1 with {len(s1_peaks_pycg_debug)} peaks. start_drop={start_drop_segment_peaks}, end_drop={end_drop_segment_peaks}")
+                    print(f"🔍 SEGMENTATION: Calling segment_peaks for S1 with {len(s1_peaks_pycg_debug)} peaks. start_drop={peak_params_config.get('start_drop', 0.6)}, end_drop={peak_params_config.get('end_drop', 0.6)}")
                     try:
                         # segment_peaks should have been checked for None in the outer try block
-                        s1_starts_debug, s1_ends_debug = segment_peaks(s1_peaks_pycg_debug, envelope_pcg, start_drop=start_drop_segment_peaks, end_drop=end_drop_segment_peaks)
+                        s1_starts_debug, s1_ends_debug = segment_peaks(s1_peaks_pycg_debug, envelope_pcg, **segment_peaks_call_args)
                         print(f"🔍 SEGMENTATION: segment_peaks (S1) found {len(s1_starts_debug)} segments.")
                         print(f"🔍 SEGMENTATION_DEBUG: S1 starts: {s1_starts_debug[:20]}")
                         print(f"🔍 SEGMENTATION_DEBUG: S1 ends: {s1_ends_debug[:20]}")
@@ -218,10 +227,10 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
             logger.error(f"Error during main segment_peaks stage (full traceback): {e_segment_overall}", exc_info=True)
         
         if len(s2_peaks_pycg_debug) > 0:
-            print(f"🔍 SEGMENTATION: Calling segment_peaks for S2 with {len(s2_peaks_pycg_debug)} peaks. start_drop={start_drop_segment_peaks}, end_drop={end_drop_segment_peaks}")
+            print(f"🔍 SEGMENTATION: Calling segment_peaks for S2 with {len(s2_peaks_pycg_debug)} peaks. start_drop={peak_params_config.get('start_drop', 0.6)}, end_drop={peak_params_config.get('end_drop', 0.6)}")
             try:
                 # segment_peaks should have been checked for None in the outer try block
-                s2_starts_debug, s2_ends_debug = segment_peaks(s2_peaks_pycg_debug, envelope_pcg, start_drop=start_drop_segment_peaks, end_drop=end_drop_segment_peaks)
+                s2_starts_debug, s2_ends_debug = segment_peaks(s2_peaks_pycg_debug, envelope_pcg_for_segmentation, **segment_peaks_call_args)
                 print(f"🔍 SEGMENTATION: segment_peaks (S2) found {len(s2_starts_debug)} segments.")
                 print(f"🔍 SEGMENTATION_DEBUG: S2 starts: {s2_starts_debug[:20]}")
                 print(f"🔍 SEGMENTATION_DEBUG: S2 ends: {s2_ends_debug[:20]}")
@@ -281,7 +290,9 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
             'envelope': final_env_list
         }
 
-def create_heart_cycle_segments(segmentation_results: Dict[str, Any]) -> List[Dict[str, Any]]:
+def create_heart_cycle_segments(segmentation_results: Dict[str, Any], fs: Optional[float] = None) -> List[Dict[str, Any]]:
+    logger.info("TESTING INFO LOG FROM create_heart_cycle_segments")
+    logger.debug(f"create_heart_cycle_segments: Initial segmentation_results keys: {list(segmentation_results.keys())}")
     """Convert segment boundaries from segmentation_results to a list of heart cycles.
     
     Args:
@@ -441,13 +452,10 @@ def segment_heart_sounds(signal_data: np.ndarray, fs: float, envelope_data: Opti
     else:
         logger.warning("  Input signal_data contains non-finite values. Stats may be unreliable.")
 
-    if method not in ['peak_detection', 'lr_hsmm']:
+    if method not in ['peak_detection']:
         logger.error(f"Unsupported segmentation method requested: {method}")
         raise ValueError(f"Unsupported segmentation method: {method}")
 
-    if method == 'lr_hsmm' and not HAS_PYPCG:
-        logger.error("Attempted to use 'lr_hsmm' method, but pyPCG is not available.")
-        raise ImportError("pyPCG is required for lr_hsmm segmentation")
 
     try:
         other_kwargs = {k: v for k, v in kwargs.items() if k not in ['fs', 'envelope', 'envelope_data']}
@@ -458,11 +466,7 @@ def segment_heart_sounds(signal_data: np.ndarray, fs: float, envelope_data: Opti
             logger.debug("segment_heart_sounds: Routing to _segment_with_peak_detection.")
             logger.debug(f"Calling _segment_with_peak_detection. Provided envelope_data is {'present' if envelope_data is not None else 'absent'}.")
             results = _segment_with_peak_detection(signal_data, fs=fs, envelope_data=envelope_data, **other_kwargs)
-        elif method == 'lr_hsmm':
-            logger.debug("segment_heart_sounds: Routing to _segment_with_lr_hsmm.")
-            model_path_hsmm = other_kwargs.pop('model_path', None) # Get model_path for lr_hsmm
-            logger.debug(f"Calling _segment_with_lr_hsmm. model_path: {model_path_hsmm}. Provided envelope_data is {'present' if envelope_data is not None else 'absent'}.")
-            results = _segment_with_lr_hsmm(signal_data, fs=fs, envelope_data=envelope_data, model_path=model_path_hsmm, **other_kwargs)
+
         # No else needed here as method is validated by checks before try block
 
         # Optionally include heart cycle segments
@@ -491,18 +495,4 @@ def segment_heart_sounds(signal_data: np.ndarray, fs: float, envelope_data: Opti
             'envelope': err_env,
             'cycles': []
         }
-
-
-
-
-def _segment_with_lr_hsmm(
-    signal_data: np.ndarray,
-    fs: float,
-    envelope_data: Optional[np.ndarray] = None,
-    model_path: Optional[str] = None,
-    **kwargs
-) -> Dict[str, Any]:
-    """Segment heart sounds using LR-HSMM model from pyPCG."""
-    logger.debug(f"_segment_with_lr_hsmm called. fs: {fs}, model_path: {model_path}")
-    # ... actual implementation
 

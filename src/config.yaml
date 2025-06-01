@@ -1,0 +1,30 @@
+audio:
+  sample_rate: 4000
+  normalize: true
+segmentation:
+  method: peak_detection # Or 'lr_hsmm' if you plan to use that
+  params:
+    min_heart_rate: 40
+    max_heart_rate: 200
+    peak_detection:
+      start_drop: 0.8
+      end_drop: 0.7
+      peak_threshold: 0.05 # <<< This is the value we want to test
+      peak_distance: 0.15 # in seconds
+      peak_width: # in seconds [min_width, max_width]
+        - 0.01
+        - 0.15
+    # Add parameters for lr_hsmm if you intend to use it, e.g.:
+    # model_path: "path/to/your/lr_hsmm_model.joblib"
+    # n_states: 4
+    # ... other lr_hsmm params
+processing:
+  resample_rate: 1000 # Example, if resampling is part of your pipeline
+  # Add other processing steps and their parameters as needed
+logging:
+  level: DEBUG # Or INFO, WARNING, ERROR
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  # file_handler:
+  #   enabled: false
+  #   path: "app.log"
+  #   level: DEBUG

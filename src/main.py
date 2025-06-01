@@ -8,6 +8,7 @@ import logging
 logger = logging.getLogger(__name__) # Define module-level logger for main.py
 
 # Configure logging as early as possible
+logging.disable_existing_loggers = False # Prevent basicConfig from disabling other loggers
 logging.basicConfig(level=logging.DEBUG, format='%(levelname)s:%(name)s:%(filename)s:%(lineno)d:%(message)s') # Set global to DEBUG for testing
 # Allow basicConfig to control levels for child loggers by default
 
@@ -36,19 +37,8 @@ def main():
     """Main function to run the heart sound analysis."""
     # Force segmentation logger to show DEBUG
     seg_logger = logging.getLogger('heart_sound_analyzer.src.segmentation')
-    seg_logger.setLevel(logging.DEBUG)
+    seg_logger.disabled = False # Forcefully re-enable to ensure logs appear
 
-    # Also add a console handler to make sure it outputs
-    # Check if handlers already exist to avoid duplication if main is called multiple times
-    if not any(isinstance(h, logging.StreamHandler) and h.formatter and 'SEGMENTATION_DEBUG' in h.formatter._fmt for h in seg_logger.handlers):
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('SEGMENTATION_DEBUG:%(name)s:%(levelname)s:%(message)s') # Added levelname
-        console_handler.setFormatter(formatter)
-        seg_logger.addHandler(console_handler)
-        # seg_logger.propagate = False # Prevent duplicate messages if root logger also has a handler (TEMPORARILY COMMENTED FOR DEBUGGING)
-    else:
-        seg_logger.debug("Segmentation logger handler already configured.")
     args = parse_arguments()
     
     # Load configuration
