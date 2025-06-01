@@ -103,6 +103,8 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
             'method' (str): Segmentation method used.
             'envelope' (List[float]): The envelope used for segmentation.
     """
+    print(f"🔍 SEGMENTATION: _segment_with_peak_detection called with envelope shape: {envelope_data.shape if envelope_data is not None else 'None'}")
+    print(f"🔍 SEGMENTATION: kwargs = {kwargs}")
     logger.debug(f"_segment_with_peak_detection called. Envelope data shape: {envelope_data.shape if envelope_data is not None else 'None'}, kwargs: {kwargs}")
     env_to_use: Optional[np.ndarray] = None
 
@@ -115,6 +117,7 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
         
         logger.debug("Using validated pre-computed envelope_data for peak detection.")
         env = envelope_data # Directly use the validated envelope_data.
+        print(f"🔍 SEGMENTATION: Envelope validated, shape = {env.shape}")
 
         # pyPCG parameters from kwargs, with defaults if not provided
         # These names are chosen to be distinct and descriptive for pyPCG usage.
@@ -146,71 +149,121 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
 
         # Simplified call to adv_peak
         debug_percent_th = 0.3 # More lenient threshold for debugging
-        logger.debug(f"Calling adv_peak(env, fs={fs}, percent_th={debug_percent_th})")
-        peak_indices_pycg_debug = np.array([], dtype=int) # Initialize
-        try:
-            if adv_peak is None:
-                raise RuntimeError("adv_peak function is None, cannot proceed with pyPCG peak detection.")
-            _, peak_indices_pycg_debug = adv_peak(env, fs=fs, percent_th=debug_percent_th)
-            logger.info(f"Simplified adv_peak found {len(peak_indices_pycg_debug)} peaks: {peak_indices_pycg_debug}")
-        except Exception as e_adv:
-            logger.error(f"Error during simplified adv_peak call: {e_adv}", exc_info=True)
-            # Fallback to empty, or could re-raise depending on desired strictness
+        print(f"🔍 SEGMENTATION_DEBUG: adv_peak signature: {inspect.signature(adv_peak)}")
+        # Wrap the envelope numpy array in a pcg_signal object as adv_peak expects
+        envelope_pcg_for_segmentation = pcg_signal(envelope_data, fs=fs)
+        print(f"🔍 SEGMENTATION: About to call adv_peak with pcg_signal object (fs={fs}, data_shape={envelope_data.shape}) and percent_th={debug_percent_th}...")
+        # adv_peak from pyPCG.segment does not take 'fs' argument.
+        _, peak_indices_pycg_debug = adv_peak(envelope_pcg_for_segmentation, percent_th=debug_percent_th)
+        logger.info(f"Simplified adv_peak found {len(peak_indices_pycg_debug)} peaks: {peak_indices_pycg_debug}")
+        print(f"🔍 SEGMENTATION: adv_peak found {len(peak_indices_pycg_debug)} peaks: {peak_indices_pycg_debug[:20]}...") # Print first 20 peaks
         
-        s1_peaks_pycg_debug = np.array([], dtype=int)
-        s2_peaks_pycg_debug = np.array([], dtype=int)
-        if len(peak_indices_pycg_debug) >= 2:
-            logger.debug(f"Calling peak_sort_diff(peak_indices_pycg_debug, fs={fs}) with {len(peak_indices_pycg_debug)} peaks.")
-            try:
-                if peak_sort_diff is None:
-                    raise RuntimeError("peak_sort_diff function is None, cannot proceed.")
-                s1_peaks_pycg_debug, s2_peaks_pycg_debug = peak_sort_diff(peak_indices_pycg_debug, fs=fs)
-                logger.info(f"Simplified peak_sort_diff found {len(s1_peaks_pycg_debug)} S1 peaks and {len(s2_peaks_pycg_debug)} S2 peaks.")
-                logger.debug(f"S1 peaks (debug): {s1_peaks_pycg_debug}")
-                logger.debug(f"S2 peaks (debug): {s2_peaks_pycg_debug}")
-            except Exception as e_sort:
-                logger.error(f"Error during simplified peak_sort_diff call: {e_sort}", exc_info=True)
-        elif HAS_PYPCG and peak_sort_diff is not None : # Only log warning if we could have called it
-            logger.warning(f"Skipping peak_sort_diff as fewer than 2 peaks found by adv_peak ({len(peak_indices_pycg_debug)}). Else, peak_sort_diff might be None.")
+        # Debugging peak_sort_diff
+        s1_peaks_pycg_debug = np.array([], dtype=int) # Initialize before try block
+        s2_peaks_pycg_debug = np.array([], dtype=int) # Initialize before try block
 
-        # Call segment_peaks (using existing start/end drop parameters from kwargs)
+        if not HAS_PYPCG or peak_sort_diff is None:
+            if not HAS_PYPCG:
+                logger.warning("pyPCG components (peak_sort_diff) not available, skipping peak sorting.")
+            if peak_sort_diff is None:
+                 logger.error("peak_sort_diff function is None (likely import error), cannot proceed with peak sorting.")
+        elif len(peak_indices_pycg_debug) >= 2:
+            try:
+                print(f"🔍 SEGMENTATION_DEBUG: peak_sort_diff signature: {inspect.signature(peak_sort_diff)}")
+                print(f"🔍 SEGMENTATION: Calling peak_sort_diff with {len(peak_indices_pycg_debug)} peaks.")
+                s1_peaks_pycg_debug, s2_peaks_pycg_debug = peak_sort_diff(peak_indices_pycg_debug)
+                print(f"🔍 SEGMENTATION: peak_sort_diff found {len(s1_peaks_pycg_debug)} S1 peaks and {len(s2_peaks_pycg_debug)} S2 peaks.")
+                print(f"🔍 SEGMENTATION_DEBUG: S1 peaks: {s1_peaks_pycg_debug[:20]}")
+                print(f"🔍 SEGMENTATION_DEBUG: S2 peaks: {s2_peaks_pycg_debug[:20]}")
+            except Exception as e_sort:
+                print(f"❌ SEGMENTATION ERROR during peak_sort_diff call: {e_sort}")
+                logger.error(f"Error during peak_sort_diff call: {e_sort}", exc_info=True)
+                # s1_peaks_pycg_debug and s2_peaks_pycg_debug remain initialized as empty
+        elif len(peak_indices_pycg_debug) > 0:
+            print(f"🔍 SEGMENTATION_WARNING: Skipping peak_sort_diff as only {len(peak_indices_pycg_debug)} peak(s) found by adv_peak (need at least 2).")
+        else: # No peaks found at all
+            print("🔍 SEGMENTATION_WARNING: Skipping peak_sort_diff as no peaks were found by adv_peak.")
+
+        # Initialize debug segment arrays before calling segment_peaks
         s1_starts_debug = np.array([], dtype=int)
         s1_ends_debug = np.array([], dtype=int)
         s2_starts_debug = np.array([], dtype=int)
         s2_ends_debug = np.array([], dtype=int)
+        print(f"🔍 SEGMENTATION_INIT: Initialized s1/s2_starts/ends_debug as empty arrays before segment_peaks calls.")
 
-        if len(s1_peaks_pycg_debug) > 0:
-            logger.debug(f"Calling segment_peaks for S1 with {len(s1_peaks_pycg_debug)} peaks. start_drop={start_drop_segment_peaks}, end_drop={end_drop_segment_peaks}")
-            try:
-                if segment_peaks is None:
-                    raise RuntimeError("segment_peaks function is None, cannot proceed for S1.")
-                s1_starts_debug, s1_ends_debug = segment_peaks(s1_peaks_pycg_debug, env, start_drop=start_drop_segment_peaks, end_drop=end_drop_segment_peaks)
-                logger.info(f"segment_peaks (S1 debug) found {len(s1_starts_debug)} segments.")
-            except Exception as e_seg_s1:
-                logger.error(f"Error during segment_peaks (S1 debug) call: {e_seg_s1}", exc_info=True)
+        try:
+            if not HAS_PYPCG:
+                logger.warning("pyPCG components (segment_peaks) not available, skipping final segmentation step.")
+            elif segment_peaks is None:
+                logger.error("segment_peaks function is None (likely import error), cannot proceed with final segmentation.")
+            else:
+                print(f"🔍 SEGMENTATION_DEBUG: segment_peaks signature: {inspect.signature(segment_peaks)}")
+                # Create a pcg_signal object from the envelope for segment_peaks
+                envelope_pcg = pcg_signal(env, fs=fs)
+                print(f"🔍 SEGMENTATION_DEBUG: Wrapped envelope in pcg_signal for segment_peaks. Type: {type(envelope_pcg)}, fs: {envelope_pcg.fs}, data shape: {envelope_pcg.data.shape}")
+
+                if len(s1_peaks_pycg_debug) > 0:
+                    print(f"🔍 SEGMENTATION: Calling segment_peaks for S1 with {len(s1_peaks_pycg_debug)} peaks. start_drop={start_drop_segment_peaks}, end_drop={end_drop_segment_peaks}")
+                    try:
+                        # segment_peaks should have been checked for None in the outer try block
+                        s1_starts_debug, s1_ends_debug = segment_peaks(s1_peaks_pycg_debug, envelope_pcg, start_drop=start_drop_segment_peaks, end_drop=end_drop_segment_peaks)
+                        print(f"🔍 SEGMENTATION: segment_peaks (S1) found {len(s1_starts_debug)} segments.")
+                        print(f"🔍 SEGMENTATION_DEBUG: S1 starts: {s1_starts_debug[:20]}")
+                        print(f"🔍 SEGMENTATION_DEBUG: S1 ends: {s1_ends_debug[:20]}")
+                    except Exception as e_seg_s1:
+                        print(f"❌ SEGMENTATION ERROR during segment_peaks (S1) call: {e_seg_s1}")
+                        logger.error(f"Error during segment_peaks (S1) call (full traceback): {e_seg_s1}", exc_info=True)
+        except Exception as e_segment_overall: # Corresponds to the try at line 193
+            print(f"❌ SEGMENTATION ERROR during main segment_peaks stage: {e_segment_overall}")
+            logger.error(f"Error during main segment_peaks stage (full traceback): {e_segment_overall}", exc_info=True)
         
         if len(s2_peaks_pycg_debug) > 0:
-            logger.debug(f"Calling segment_peaks for S2 with {len(s2_peaks_pycg_debug)} peaks. start_drop={start_drop_segment_peaks}, end_drop={end_drop_segment_peaks}")
+            print(f"🔍 SEGMENTATION: Calling segment_peaks for S2 with {len(s2_peaks_pycg_debug)} peaks. start_drop={start_drop_segment_peaks}, end_drop={end_drop_segment_peaks}")
             try:
-                if segment_peaks is None:
-                    raise RuntimeError("segment_peaks function is None, cannot proceed for S2.")
-                s2_starts_debug, s2_ends_debug = segment_peaks(s2_peaks_pycg_debug, env, start_drop=start_drop_segment_peaks, end_drop=end_drop_segment_peaks)
-                logger.info(f"segment_peaks (S2 debug) found {len(s2_starts_debug)} segments.")
+                # segment_peaks should have been checked for None in the outer try block
+                s2_starts_debug, s2_ends_debug = segment_peaks(s2_peaks_pycg_debug, envelope_pcg, start_drop=start_drop_segment_peaks, end_drop=end_drop_segment_peaks)
+                print(f"🔍 SEGMENTATION: segment_peaks (S2) found {len(s2_starts_debug)} segments.")
+                print(f"🔍 SEGMENTATION_DEBUG: S2 starts: {s2_starts_debug[:20]}")
+                print(f"🔍 SEGMENTATION_DEBUG: S2 ends: {s2_ends_debug[:20]}")
             except Exception as e_seg_s2:
-                logger.error(f"Error during segment_peaks (S2 debug) call: {e_seg_s2}", exc_info=True)
+                print(f"❌ SEGMENTATION ERROR during segment_peaks (S2) call: {e_seg_s2}")
+                logger.error(f"Error during segment_peaks (S2) call (full traceback): {e_seg_s2}", exc_info=True)
+        else:
+            print("🔍 SEGMENTATION_INFO: No S2 peaks to segment.")
 
         logger.debug("--- End of pyPCG Peak Detection Debugging ---")
         
         # Use the results from the debug path for the return value
         # This replaces the original pyPCG path's return.
+        # Construct 2D segment arrays
+        s1_segments_arr = np.array([]) 
+        if s1_starts_debug.size > 0 and s1_ends_debug.size > 0 and len(s1_starts_debug) == len(s1_ends_debug):
+            s1_segments_arr = np.column_stack((s1_starts_debug, s1_ends_debug))
+        
+        s2_segments_arr = np.array([])
+        if s2_starts_debug.size > 0 and s2_ends_debug.size > 0 and len(s2_starts_debug) == len(s2_ends_debug):
+            s2_segments_arr = np.column_stack((s2_starts_debug, s2_ends_debug))
+
+        # Ensure output is consistently shaped (0,2) for empty or (N,2) for non-empty
+        if s1_segments_arr.size == 0:
+            s1_segments_arr = np.empty((0, 2), dtype=int)
+        
+        if s2_segments_arr.size == 0:
+            s2_segments_arr = np.empty((0, 2), dtype=int)
+        
+        print(f"🔍 SEGMENTATION_RETURN: s1_segments_arr shape: {s1_segments_arr.shape}, s2_segments_arr shape: {s2_segments_arr.shape}")
+
         return {
-            's1_starts': s1_starts_debug, 's1_ends': s1_ends_debug,
-            's2_starts': s2_starts_debug, 's2_ends': s2_ends_debug,
-            'method': 'peak_detection_pyPCG_debug', # Indicate this is from the debug path
+            's1_segments': s1_segments_arr,
+            's2_segments': s2_segments_arr,
+            's1_peaks': s1_peaks_pycg_debug.tolist() if hasattr(s1_peaks_pycg_debug, 'tolist') else list(s1_peaks_pycg_debug),
+            's2_peaks': s2_peaks_pycg_debug.tolist() if hasattr(s2_peaks_pycg_debug, 'tolist') else list(s2_peaks_pycg_debug),
+            'method': 'peak_detection_pyPCG_debug',
             'envelope': env.tolist() if env is not None else []
         }
         
     except Exception as e_outer_peak:
+        print(f"❌ SEGMENTATION ERROR in _segment_with_peak_detection: {e_outer_peak}")
         logger.error(f"Error in peak detection segmentation: {str(e_outer_peak)}", exc_info=True)
         # Ensure env is defined for the return statement in case of early exception
         final_env_list = []
@@ -228,29 +281,42 @@ def _segment_with_peak_detection(signal_data: np.ndarray, fs: float, envelope_da
             'envelope': final_env_list
         }
 
-def create_heart_cycle_segments(segments: Dict[str, np.ndarray]) -> List[Dict[str, Any]]:
-    """Convert segment boundaries to a list of heart cycles.
+def create_heart_cycle_segments(segmentation_results: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Convert segment boundaries from segmentation_results to a list of heart cycles.
     
     Args:
-        segments: Dictionary containing 's1_starts', 's1_ends', 's2_starts', 's2_ends'
+        segmentation_results: Dictionary containing 's1_segments' (Nx2 array) 
+                              and 's2_segments' (Mx2 array).
         
     Returns:
         List of dictionaries, each representing a heart cycle with its segments,
         including timing information like durations and intervals.
     """
-    logger.debug("create_heart_cycle_segments called.")
+    logger.debug(f"create_heart_cycle_segments called with keys: {list(segmentation_results.keys())}")
     cycles = []
     
     try:
-        required_keys = ['s1_starts', 's1_ends', 's2_starts', 's2_ends']
-        if not all(key in segments and segments[key] is not None for key in required_keys):
-            logger.warning("Missing or None required segment keys in input for create_heart_cycle_segments.")
+        required_keys = ['s1_segments', 's2_segments']
+        if not all(key in segmentation_results and isinstance(segmentation_results[key], np.ndarray) for key in required_keys):
+            logger.warning(f"Missing or invalid required segment keys ({required_keys}) in input for create_heart_cycle_segments. Received keys: {list(segmentation_results.keys())}")
+            return []
+
+        s1_segments_arr = segmentation_results['s1_segments']
+        s2_segments_arr = segmentation_results['s2_segments']
+
+        logger.debug(f"Received s1_segments shape: {s1_segments_arr.shape}, s2_segments shape: {s2_segments_arr.shape}")
+
+        if s1_segments_arr.ndim != 2 or s1_segments_arr.shape[1] != 2 or s1_segments_arr.shape[0] == 0:
+            logger.warning(f"Invalid s1_segments array shape: {s1_segments_arr.shape}. Expected (N, 2) with N > 0.")
+            return []
+        if s2_segments_arr.ndim != 2 or s2_segments_arr.shape[1] != 2 or s2_segments_arr.shape[0] == 0:
+            logger.warning(f"Invalid s2_segments array shape: {s2_segments_arr.shape}. Expected (M, 2) with M > 0.")
             return []
             
-        s1_starts = np.asarray(segments['s1_starts'])
-        s1_ends = np.asarray(segments['s1_ends'])
-        s2_starts = np.asarray(segments['s2_starts'])
-        s2_ends = np.asarray(segments['s2_ends'])
+        s1_starts = s1_segments_arr[:, 0]
+        s1_ends = s1_segments_arr[:, 1]
+        s2_starts = s2_segments_arr[:, 0]
+        s2_ends = s2_segments_arr[:, 1]
 
         logger.debug(f"Input segments: S1 starts ({len(s1_starts)}), S1 ends ({len(s1_ends)}), S2 starts ({len(s2_starts)}), S2 ends ({len(s2_ends)})")
 
@@ -291,13 +357,16 @@ def create_heart_cycle_segments(segments: Dict[str, np.ndarray]) -> List[Dict[st
             # S1 should end before S2 ends
             s1_ends_before_s2_ends = s1_ends[i] < s2_ends[i]
 
+            # Detailed logging for validity checks
+            logger.debug(f"Cycle candidate {i}: S1 ({s1_starts[i]}-{s1_ends[i]}), S2 ({s2_starts[i]}-{s2_ends[i]})")
+            logger.debug(f"  Check valid_s1 (s1_starts < s1_ends): {s1_starts[i]} < {s1_ends[i]} -> {valid_s1}")
+            logger.debug(f"  Check valid_s2 (s2_starts < s2_ends): {s2_starts[i]} < {s2_ends[i]} -> {valid_s2}")
+            logger.debug(f"  Check s1_precedes_s2_start (s1_starts < s2_starts): {s1_starts[i]} < {s2_starts[i]} -> {s1_precedes_s2_start}")
+            logger.debug(f"  Check s1_ends_before_s2_starts (s1_ends < s2_starts): {s1_ends[i]} < {s2_starts[i]} -> {s1_ends_before_s2_starts}")
+            logger.debug(f"  Check s1_ends_before_s2_ends (s1_ends < s2_ends): {s1_ends[i]} < {s2_ends[i]} -> {s1_ends_before_s2_ends}")
+
             if not (valid_s1 and valid_s2 and s1_precedes_s2_start and s1_ends_before_s2_starts and s1_ends_before_s2_ends):
-                logger.debug(f"Skipping cycle {i}: Invalid segment timing or order. "
-                             f"S1: {s1_starts[i]}-{s1_ends[i]} (Valid: {valid_s1}), "
-                             f"S2: {s2_starts[i]}-{s2_ends[i]} (Valid: {valid_s2}), "
-                             f"S1_starts < S2_starts: {s1_precedes_s2_start}, "
-                             f"S1_ends < S2_starts: {s1_ends_before_s2_starts}, "
-                             f"S1_ends < S2_ends: {s1_ends_before_s2_ends}")
+                logger.debug(f"---> Skipping cycle candidate {i} due to failed checks.")
                 continue
                 
             cycle = {

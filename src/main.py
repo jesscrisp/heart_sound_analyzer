@@ -1,5 +1,6 @@
 """Main entry point for the Heart Sound Analyzer application."""
 import argparse
+import logging
 from pathlib import Path
 from typing import Optional
 import logging
@@ -33,6 +34,21 @@ def parse_arguments():
 
 def main():
     """Main function to run the heart sound analysis."""
+    # Force segmentation logger to show DEBUG
+    seg_logger = logging.getLogger('heart_sound_analyzer.src.segmentation')
+    seg_logger.setLevel(logging.DEBUG)
+
+    # Also add a console handler to make sure it outputs
+    # Check if handlers already exist to avoid duplication if main is called multiple times
+    if not any(isinstance(h, logging.StreamHandler) and h.formatter and 'SEGMENTATION_DEBUG' in h.formatter._fmt for h in seg_logger.handlers):
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('SEGMENTATION_DEBUG:%(name)s:%(levelname)s:%(message)s') # Added levelname
+        console_handler.setFormatter(formatter)
+        seg_logger.addHandler(console_handler)
+        # seg_logger.propagate = False # Prevent duplicate messages if root logger also has a handler (TEMPORARILY COMMENTED FOR DEBUGGING)
+    else:
+        seg_logger.debug("Segmentation logger handler already configured.")
     args = parse_arguments()
     
     # Load configuration

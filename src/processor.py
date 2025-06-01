@@ -8,7 +8,9 @@ from pathlib import Path
 
 # Import internal modules
 from .segmentation import segment_heart_sounds, create_heart_cycle_segments
-from .io import AudioLoader, HAS_PYPCG
+from .io import AudioLoader, HAS_PYPCG # Import HAS_PYPCG
+import numpy as np
+from pyPCG.segment import adv_peak # For the quick test, HAS_PYPCG
 from pyPCG import pcg_signal # For type checking and creating objects
 from pyPCG.preprocessing import filter as pyPCG_filter
 from pyPCG.preprocessing import wt_denoise_sth
@@ -116,7 +118,42 @@ class HeartSoundProcessor:
                             logger.error("CRITICAL ERROR: Envelope contains negative values!")
                     elif extracted_envelope_data is None or extracted_envelope_data.size == 0:
                         logger.warning("Envelope data is None or empty after extraction.")
-                    
+
+                    # Quick Test for pyPCG functions directly after envelope extraction (USER'S IMPROVED VERSION)
+                    if extracted_envelope_data is not None and sample_rate is not None:
+                        print(f"\n🧪 TESTING (processor.py): Envelope shape = {extracted_envelope_data.shape}")
+                        print(f"🧪 TESTING (processor.py): Envelope range = [{np.min(extracted_envelope_data):.6f}, {np.max(extracted_envelope_data):.6f}]")
+                        print(f"🧪 TESTING (processor.py): fs = {sample_rate} (Note: fs is not used by adv_peak directly)")
+
+                        # Test adv_peak with correct signature
+                        try:
+                            print(f"🧪 TESTING (processor.py): Calling adv_peak WITHOUT fs parameter (using default or percent_th if provided)... on envelope of type {type(extracted_envelope_data)} and dtype {extracted_envelope_data.dtype}")
+                            # Using a lenient percent_th for testing, similar to segmentation debug
+                            test_percent_th_proc = 0.3 
+                            # Wrap the envelope numpy array in a pcg_signal object as adv_peak expects
+                            envelope_pcg_for_test = pcg_signal(extracted_envelope_data, fs=sample_rate)
+                            print(f"🧪 TESTING (processor.py): Calling adv_peak with pcg_signal object (fs={sample_rate}, data_shape={extracted_envelope_data.shape}) and percent_th={test_percent_th_proc}")
+                            result = adv_peak(envelope_pcg_for_test, percent_th=test_percent_th_proc)
+                            print(f"🧪 TESTING (processor.py): adv_peak raw result: {result}")
+                            
+                            # If result is a tuple, get the peaks (typically the second element)
+                            if isinstance(result, tuple):
+                                peaks = result[1] if len(result) > 1 else result[0]
+                            else:
+                                peaks = result # Assuming result itself is the array of peaks
+                            
+                            # Ensure peaks is a numpy array for len() and slicing
+                            if not isinstance(peaks, np.ndarray):
+                                peaks = np.array(peaks)
+                                
+                            print(f"🧪 TESTING (processor.py): Found {len(peaks)} peaks: {peaks[:20]}...")
+                            
+                        except Exception as test_error:
+                            logger.error(f"🧪 TESTING (processor.py): adv_peak test failed: {test_error}", exc_info=True)
+                        print("--- End of Quick Test (processor.py) ---\n")
+                    else:
+                        print("🧪 TESTING (processor.py): Envelope data or fs is None, skipping direct pyPCG test.")
+
                     processed_signal_data = processed_pcg_obj.data
                     processing_pipeline_successful = True
                     status_message = "pyPCG processing pipeline successful."
@@ -155,16 +192,43 @@ class HeartSoundProcessor:
                 logger.info("Proceeding to segmentation.")
                 try:
                     segmentation_kwargs = self.config.get('segmentation_params', {})
-                    segments = segment_heart_sounds(
+                    segmentation_results = segment_heart_sounds(
                         processed_signal_data,
                         fs=sample_rate,
                         envelope_data=extracted_envelope_data,
                         **segmentation_kwargs
                     )
+                    # Comprehensive debug print for segmentation_results
+                    debug_info = {}
+                    for key, value in segmentation_results.items():
+                        if isinstance(value, np.ndarray):
+                            debug_info[key] = f"ndarray, shape={value.shape}, dtype={value.dtype}"
+                        elif isinstance(value, (list, tuple)):
+                            debug_info[key] = f"{type(value).__name__}, len={len(value)}"
+                        else:
+                            debug_info[key] = f"type={type(value).__name__}"
+                    print(f"🔍 PROCESSOR DEBUG: segmentation_results content: {debug_info}")
+
+                    s1_segments_array = segmentation_results.get("s1_segments", np.array([]))
+                    s2_segments_array = segmentation_results.get("s2_segments", np.array([]))
+
+                    # Robust extraction of S1 and S2 starts and ends
+                    s1_starts, s1_ends = (s1_segments_array[:, 0], s1_segments_array[:, 1]) if s1_segments_array.ndim == 2 and s1_segments_array.shape[0] > 0 else (np.array([]), np.array([]))
+                    s2_starts, s2_ends = (s2_segments_array[:, 0], s2_segments_array[:, 1]) if s2_segments_array.ndim == 2 and s2_segments_array.shape[0] > 0 else (np.array([]), np.array([]))
+
+                    segments = {
+                        's1_starts': s1_starts,
+                        's1_ends': s1_ends,
+                        's2_starts': s2_starts,
+                        's2_ends': s2_ends,
+                        'method': segmentation_results.get('method', 'peak_detection_pycg'), # Get method from results
+                        'envelope': segmentation_results.get('envelope', extracted_envelope_data) # Prefer envelope from results
+                    }
+                    
+                    logger.info(f"Segmentation completed. Found {len(s1_starts)} S1 and {len(s2_starts)} S2 sounds.")
                     heart_cycles = create_heart_cycle_segments(segments)
                     segmentation_successful = True
                     status_message += " Segmentation successful."
-                    logger.info(f"Segmentation completed. Found {len(segments.get('s1_starts', []))} S1 and {len(segments.get('s2_starts', []))} S2 sounds.")
                 except Exception as e_seg:
                     logger.error(f"Error during segmentation: {e_seg}", exc_info=True)
                     status_message += f" Segmentation failed: {str(e_seg)}"

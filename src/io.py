@@ -110,9 +110,19 @@ class AudioLoader:
                 # Fallback to scipy
                 from scipy.io import wavfile
                 # Ensure proper data type and range
-                signal = np.asarray(signal, dtype=np.float32)
-                signal = np.clip(signal, -1.0, 1.0)
-                wavfile.write(str(file_path), sample_rate, signal)
+                signal_array = np.asarray(signal, dtype=np.float32)
+                
+                # Ensure signal is 1D (fix the shape error)
+                if signal_array.ndim > 1:
+                    logger.debug(f"save_audio (scipy fallback): signal_array was {signal_array.ndim}D, flattening to 1D.")
+                    signal_array = signal_array.flatten()
+                
+                signal_array = np.clip(signal_array, -1.0, 1.0)
+    
+                # Convert to int16 for wav file, as expected by scipy.io.wavfile.write for standard PCM WAV
+                signal_int16 = (signal_array * 32767).astype(np.int16)
+                logger.debug(f"save_audio (scipy fallback): Saving signal of shape {signal_int16.shape}, dtype {signal_int16.dtype}, fs {sample_rate} to {file_path}")
+                wavfile.write(str(file_path), sample_rate, signal_int16)
                 
             logger.info(f"Saved audio to {file_path}")
             
