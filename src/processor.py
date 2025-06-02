@@ -9,6 +9,8 @@ from pathlib import Path
 # Import internal modules
 from .segmentation import segment_heart_sounds, create_heart_cycle_segments
 from .io import AudioLoader, HAS_PYPCG, PCGSignalType # Import shared status and type
+from .preprocessing_pipeline import SignalPreprocessor
+from .envelope_extractor import EnvelopeExtractor
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -56,6 +58,8 @@ class HeartSoundProcessor:
         self.config = config
         self.audio_loader = AudioLoader(config)
         self.segmentation_config = config.get('segmentation', {})
+        self.signal_preprocessor = SignalPreprocessor(self.config)
+        self.envelope_extractor = EnvelopeExtractor(self.config)
     
     
     def process_file(self, file_path: str) -> Dict[str, Any]:
@@ -99,70 +103,84 @@ class HeartSoundProcessor:
                 status_message = "pyPCG components available and audio loaded as pcg_signal."
                 logger.info(status_message)
                 
-                try:
-                    raw_signal_data = np.copy(pcg_audio_obj.data)
-                    sample_rate = pcg_audio_obj.fs
-                    logger.info(f"pyPCG path: Loaded signal with fs={sample_rate}, shape={raw_signal_data.shape}, dtype={raw_signal_data.dtype}")
+                input_for_preprocessor = None # Will be pcg_signal object or numpy array
 
-                    # Define pyPCG pipeline steps
-                    low_cut = self.config.get('audio', {}).get('low_cut_hz', 25)
-                    high_cut = self.config.get('audio', {}).get('high_cut_hz', 150)
-                    filter_order = self.config.get('audio', {}).get('filter_order', 4)
-
-                    hp_filter_step = {'step': pyPCG_filter, 'params': {'filt_ord': filter_order, 'filt_cutfreq': low_cut, 'filt_type': 'HP'}}
-                    lp_filter_step = {'step': pyPCG_filter, 'params': {'filt_ord': filter_order, 'filt_cutfreq': high_cut, 'filt_type': 'LP'}}
-                    denoise_step = wt_denoise_sth
-                    normalize_step = pyPCG_normalize
-                    
-                    core_pipeline = process_pipeline(hp_filter_step, lp_filter_step, denoise_step, normalize_step)
-                    
-                    logger.info("Applying pyPCG core processing pipeline (filter, denoise, normalize)...")
-                    processed_pcg_obj = core_pipeline.run(pcg_audio_obj)
-                    logger.info("pyPCG core processing pipeline applied.")
-
-                    logger.info("Applying pyPCG envelope extraction...")
-                    envelope_pcg_obj = pyPCG_homomorphic_envelope(processed_pcg_obj)
-                    extracted_envelope_data = envelope_pcg_obj.data
-                    logger.info("pyPCG envelope extraction applied.")
-                    if extracted_envelope_data is not None and extracted_envelope_data.size > 0:
-                        logger.info(f"Envelope stats: min={np.min(extracted_envelope_data)}, max={np.max(extracted_envelope_data)}, shape={extracted_envelope_data.shape}, dtype={extracted_envelope_data.dtype})")
-                        envelope_extraction_successful = True # Set flag here
-                        if np.min(extracted_envelope_data) < 0:
-                            logger.error("CRITICAL ERROR: Envelope contains negative values!")
-                    elif extracted_envelope_data is None or extracted_envelope_data.size == 0:
-                        logger.warning("Envelope data is None or empty after extraction.")
-                        envelope_extraction_successful = False # Explicitly false
-
-
-                    processed_signal_data = processed_pcg_obj.data
-                    if envelope_extraction_successful:
-                        processing_pipeline_successful = True
-                        status_message += "pyPCG core processing and envelope extraction applied."
-                        logger.info("pyPCG core processing and envelope extraction applied.")
+                if is_pcg_object:
+                    # loaded_signal_or_data is a pcg_signal object
+                    pcg_audio_obj: PCGSignalType = loaded_signal_or_data # type: ignore
+                    if pcg_audio_obj is not None:
+                        raw_signal_data = np.copy(pcg_audio_obj.data) # Keep original raw data
+                        sample_rate = pcg_audio_obj.fs
+                        input_for_preprocessor = pcg_audio_obj # Pass the object to preprocessor
+                        logger.info(f"Audio loaded as pcg_signal. fs={sample_rate}, shape={raw_signal_data.shape if raw_signal_data is not None else 'N/A'}")
+                        status_message += " Audio loaded as pyPCG object."
                     else:
-                        processing_pipeline_successful = False # Envelope extraction failed
-                        status_message += "pyPCG core processing applied, but envelope extraction failed."
-                        logger.warning("pyPCG core processing applied, but envelope extraction failed.")
+                        logger.error("is_pcg_object is True but loaded_signal_or_data is None. This should not happen.")
+                        status_message += " Critical error: loaded_signal_or_data is None despite being pcg_object type."
+                        # Flags will remain false, leading to segmentation skip
 
-                except Exception as e_proc:
-                    logger.error(f"Error during pyPCG processing pipeline: {e_proc}", exc_info=True)
-                    status_message += " pyPCG processing or envelope extraction failed, or pyPCG not available."
-                    # raw_signal_data and sample_rate might still be set if error was mid-pipeline
-                    processed_signal_data = None 
-                    extracted_envelope_data = None
-                    processing_pipeline_successful = False
-            
-            else: # PROCESSOR_HAS_PYPCG_COMPONENTS is False or audio not loaded as pcg_signal
-                logger.warning("Processor's pyPCG components not available (PROCESSOR_HAS_PYPCG_COMPONENTS is False) or audio not loaded as pcg_signal. Cannot proceed with pyPCG processing.")
-                status_message = "Processor's pyPCG components not available or audio not loaded as pcg_signal. Cannot proceed with pyPCG processing."
+                elif isinstance(loaded_signal_or_data, tuple) and len(loaded_signal_or_data) == 2:
+                    _raw, _sr = loaded_signal_or_data
+                    if isinstance(_raw, np.ndarray):
+                        raw_signal_data = _raw # Keep original raw data
+                        input_for_preprocessor = raw_signal_data # Pass numpy array to preprocessor
+                    if isinstance(_sr, (int, float)):
+                        sample_rate = int(_sr)
+                    
+                    if raw_signal_data is not None and sample_rate is not None:
+                        logger.info(f"Audio loaded as numpy array. fs={sample_rate}, shape={raw_signal_data.shape}")
+                        status_message += " Audio loaded as numpy array."
+                    else:
+                        logger.error("Failed to extract numpy array or sample rate from loader's tuple output.")
+                        status_message += " Failed to extract audio data/sample rate from loader output."
+                        # Flags will remain false
+                else:
+                    logger.error(f"Loaded audio type unhandled or data missing: {type(loaded_signal_or_data)}. Cannot proceed.")
+                    status_message += " Unhandled audio load type or missing data."
+                    # Flags will remain false
+
+                # Proceed with preprocessing and envelope extraction if input is valid
+                if input_for_preprocessor is not None and sample_rate is not None:
+                    logger.info("Attempting signal preprocessing...")
+                    # preprocess now returns (Optional[PCGSignalType], str)
+                    processed_pcg_object, preprocess_status = self.signal_preprocessor.preprocess(input_for_preprocessor, sample_rate)
+                    status_message += f" {preprocess_status}"
+
+                    if processed_pcg_object is not None and pcg_signal and isinstance(processed_pcg_object, pcg_signal):
+                        processed_signal_data = processed_pcg_object.data # Extract numpy array for saving/other uses
+                        sample_rate = processed_pcg_object.fs # Update sample rate from processed object
+                        logger.info(f"Signal preprocessing step completed. Processed data shape: {processed_signal_data.shape if processed_signal_data is not None else 'N/A'}")
+                        processing_pipeline_successful = True
+
+                        logger.info("Attempting envelope extraction...")
+                        # extract_envelope now takes PCGSignalType object
+                        extracted_envelope_data, envelope_status = self.envelope_extractor.extract_envelope(processed_pcg_object)
+                        status_message += f" {envelope_status}"
+
+                        if extracted_envelope_data is not None and extracted_envelope_data.size > 0:
+                            logger.info(f"Envelope extraction step completed. Envelope shape: {extracted_envelope_data.shape}")
+                            envelope_extraction_successful = True
+                        else:
+                            logger.warning("Envelope extraction returned None or empty data.")
+                            envelope_extraction_successful = False
+                            # No need to change status_message further, already updated by envelope_status
+                    else: # processed_pcg_object was None or not a pcg_signal (preprocessing failed)
+                        logger.warning("Signal preprocessing returned None or an invalid object. Skipping further processing in this path.")
+                        processing_pipeline_successful = False
+                        envelope_extraction_successful = False
+                        processed_signal_data = None # Ensure data is None if preprocessing failed
+                        extracted_envelope_data = np.array([]) # Ensure envelope is empty
+                        # status_message already updated by preprocess_status
+            else: # Corresponds to: if input_for_preprocessor is None and sample_rate is None (from line 142):
+                logger.error("Cannot proceed with preprocessing: essential audio data (input_for_preprocessor) or sample rate is missing after loading stage.")
+                # Flags are already initialized to False at the start of the method.
+                # Ensure they remain so if this path is taken due to missing inputs for preprocessing.
                 processing_pipeline_successful = False
-                # Ensure raw_signal_data and sample_rate are populated if audio was loaded as numpy array by AudioLoader
-                if isinstance(loaded_signal_or_data, tuple) and len(loaded_signal_or_data) == 2:
-                     _raw, _sr = loaded_signal_or_data
-                     if isinstance(_raw, np.ndarray) and raw_signal_data is None: raw_signal_data = _raw
-                     if isinstance(_sr, (int, float)) and sample_rate is None: sample_rate = int(_sr)
+                envelope_extraction_successful = False
+                # processed_signal_data and extracted_envelope_data retain their initial values (None, empty array)
+                # if this path is taken.
 
-            # 2. Segmentation (only if pyPCG processing was successful)
+            # 3. Segmentation (only if pyPCG processing and envelope extraction were successful)
             if processing_pipeline_successful and processed_signal_data is not None and sample_rate is not None:
                 logger.info("Proceeding to segmentation.")
                 try:
