@@ -1,23 +1,51 @@
 """Configuration loading and management."""
+import logging
 from pathlib import Path
 from typing import Dict, Any
 import yaml
 import os
 
-def load_config(config_path: str = None) -> Dict[str, Any]:
+logger = logging.getLogger(__name__)
+
+# Default configuration file path, relative to the project root
+# Assumes the script is run from the project root, or this path is relative to where config.py is located.
+# To make it robustly point to PROJECT_ROOT/config/config.yaml from PROJECT_ROOT/src/config.py:
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent # Get to PyPCG_first_attempt
+DEFAULT_PROJECT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+
+def load_config(cli_config_path_str: str = None) -> Dict[str, Any]:
     """Load configuration from YAML file.
-    
+
+    If cli_config_path_str is provided, attempts to load from that path.
+    Otherwise, attempts to load from DEFAULT_PROJECT_CONFIG_PATH.
+    Falls back to internal defaults if file loading fails.
+
     Args:
-        config_path: Path to the YAML configuration file. If None, uses default config.
-        
+        cli_config_path_str: Path to the YAML configuration file from CLI (optional).
+
     Returns:
-        Dictionary containing configuration parameters
+        Dictionary containing configuration parameters.
     """
-    # Default configuration
+    # Internal default configuration
     default_config = {
         'audio': {
             'sample_rate': 4000,
             'normalize': True
+        },
+        'preprocessing': {
+            'resample_rate': 1000,
+            'normalize_after_preprocessing': True,
+            'filter': {
+                'enabled': True,
+                'lowcut': 25,
+                'highcut': 200,
+                'order': 4
+            },
+            'envelope': {
+                'method': 'hilbert',
+                'window_size': 0.01,
+                'power': 1
+            }
         },
         'segmentation': {
             'method': 'peak_detection',
@@ -26,54 +54,84 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
             'peak_detection': {
                 'start_drop': 0.8,
                 'end_drop': 0.7,
-                'peak_threshold': 0.1, # This default will be overridden by file if loaded
+                'peak_threshold': 0.1,
                 'peak_distance': 0.15,
                 'peak_width': [0.01, 0.15]
+            },
+            'lr_hsmm': {
+                'model_path': 'models/lr_hsmm_model.json',
+                'state_mapping': {
+                    's1': 'S1',
+                    's2': 'S2',
+                    'systole': 'SYSTOLE',
+                    'diastole': 'DIASTOLE'
+                }
             }
-        },
-        'preprocessing': {
-            'lowcut': 25,
-            'highcut': 400
         },
         'output': {
             'save_plots': True,
             'plot_format': 'png',
             'show_plots': False,
             'debug': False
+        },
+        'paths': {
+            'data_raw': 'heart_sound_analyzer/data/raw',
+            'data_processed': 'heart_sound_analyzer/data/processed',
+            'results': 'heart_sound_analyzer/data/results',
+            'models': 'heart_sound_analyzer/models'
+        },
+        'logging': {
+            'level': 'DEBUG',
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         }
     }
-    
-    # If no config path provided, use default
-    if not config_path:
-        print("Warning: No configuration file path provided. Using default configuration.")
-        return default_config
-    
-    # Try to load config from file
-    try:
-        # Ensure the path is absolute or correctly relative to the CWD
-        # When run with `python -m src.main`, CWD is project root.
-        # `config_path` (e.g., 'config/config.yaml') should be relative to project root.
-        path_to_open = Path(config_path)
-        if not path_to_open.is_absolute():
-            # This assumes that if it's not absolute, it's relative to the CWD (project root)
-            # which is usually the case for command line args.
-            pass # Keep it as is, Python's open will resolve from CWD
 
-        with open(path_to_open, 'r') as f:
-            file_config = yaml.safe_load(f)
+    path_to_try_loading = None
+    is_cli_path = False
+    config_source_description = ""
+
+    if cli_config_path_str:
+        path_to_try_loading = Path(cli_config_path_str)
+        is_cli_path = True
+        config_source_description = f"CLI path: '{path_to_try_loading}'"
+        logger.info(f"CLI configuration path provided: '{path_to_try_loading}'. Attempting to load.")
+    else:
+        # Check for DEFAULT_CONFIG_FILE environment variable
+        default_config_file_env = os.getenv('DEFAULT_CONFIG_FILE')
+        if default_config_file_env:
+            path_to_try_loading = PROJECT_ROOT / default_config_file_env
+            config_source_description = f"environment variable DEFAULT_CONFIG_FILE: '{path_to_try_loading}'"
+            logger.info(f"Using configuration path from environment variable DEFAULT_CONFIG_FILE: '{path_to_try_loading}'.")
+        else:
+            path_to_try_loading = DEFAULT_PROJECT_CONFIG_PATH
+            config_source_description = f"default project path: '{path_to_try_loading}'"
+            logger.info(f"No CLI path or DEFAULT_CONFIG_FILE env var. Attempting to load from default project path: '{path_to_try_loading}'.")
+
+    try:
+        # Using resolve() for a more absolute path in logs, helps in debugging.
+        # Note: resolve() will raise FileNotFoundError if the path doesn't exist, so call it carefully.
+        # For logging the path that was *attempted*, path_to_try_loading (as string) is fine.
         
-        # Merge with default config (file config overrides defaults)
+        with open(path_to_try_loading, 'r') as f:
+            file_config = yaml.safe_load(f)
+
         if file_config:
-            # print(f"Successfully loaded config from {path_to_open.resolve()}") # Debug print
+            logger.info(f"Successfully loaded and merged configuration from {config_source_description} (resolved: '{path_to_try_loading.resolve()}').")
             return _deep_merge(default_config, file_config)
-        # print(f"Warning: Config file {path_to_open.resolve()} was empty. Using default configuration.")
-        return default_config
-            
+        else:
+            logger.warning(f"Configuration file from {config_source_description} (resolved: '{path_to_try_loading.resolve()}') is empty. Using internal default configuration.")
+            return default_config
+
     except FileNotFoundError:
-        print(f"Warning: Configuration file not found at {Path(config_path).resolve()}. Using default configuration.")
+        resolved_path_str = str(path_to_try_loading.resolve(strict=False)) # Get path string even if it doesn't exist
+        if is_cli_path:
+            logger.warning(f"Configuration file specified via {config_source_description} not found: '{resolved_path_str}'. Using internal default configuration.")
+        else:
+            logger.info(f"Configuration file from {config_source_description} not found at '{resolved_path_str}'. Using internal default configuration.") # This case might be less common now with env var check
         return default_config
     except Exception as e:
-        print(f"Warning: Could not load config from {Path(config_path).resolve()}: {e}. Using default configuration.")
+        resolved_path_str = str(path_to_try_loading.resolve(strict=False))
+        logger.warning(f"Error loading configuration from {config_source_description} (resolved: '{resolved_path_str}'): {e}. Using internal default configuration.")
         return default_config
 
 def _deep_merge(d1: Dict, d2: Dict) -> Dict:

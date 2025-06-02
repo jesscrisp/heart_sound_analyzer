@@ -3,8 +3,13 @@
 # Standard library imports
 import argparse
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Optional
+
+# Third-party imports
+from dotenv import load_dotenv
 
 # Local application imports
 from .config import load_config
@@ -25,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(filenam
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Analyze heart sound recordings.')
-    parser.add_argument('input_file', type=str, help='Path to input WAV file.')
+    parser.add_argument('input_file', type=str, nargs='?', default=None, help='Path to input WAV file. If not provided, tries to load from .env file.')
     parser.add_argument('--config', type=str, default=None,
                         help='Path to YAML configuration file.')
     parser.add_argument('--output-dir', type=str, default=None,
@@ -37,7 +42,29 @@ def parse_arguments():
 
 def main() -> None:
     """Main function to run the heart sound analysis."""
+    load_dotenv() # Load environment variables from .env file
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent # Get to PyPCG_first_attempt
     args = parse_arguments()
+
+    input_file_path = args.input_file
+    if input_file_path is None:
+        env_input_file = os.getenv('DEFAULT_INPUT_FILE')
+        if env_input_file:
+            # Check if the path from .env is absolute or relative
+            potential_path = Path(env_input_file)
+            if potential_path.is_absolute():
+                input_file_path = str(potential_path)
+                logger.info(f"Input file not provided via CLI, using absolute DEFAULT_INPUT_FILE from .env: {input_file_path}")
+            else:
+                input_file_path = str(PROJECT_ROOT / env_input_file)
+                logger.info(f"Input file not provided via CLI, using relative DEFAULT_INPUT_FILE from .env, resolved to: {input_file_path}")
+        else:
+            logger.error("Error: Input file not provided via CLI and DEFAULT_INPUT_FILE not set in .env. Please provide an input file.")
+            sys.exit(1)
+    
+    # Update args.input_file to ensure it's correctly populated for the rest of the script
+    # This is a bit redundant if we use input_file_path throughout, but safer if other parts of args are passed around.
+    args.input_file = input_file_path
     
     try:
         # Load configuration. load_config provides a dictionary with a default structure.
@@ -58,8 +85,8 @@ def main() -> None:
         audio_loader = AudioLoader(config) # Used for saving audio
         visualizer = HeartSoundVisualizer() # Visualizer might take config for styling in future
 
-        logger.info(f"Starting processing for file: {args.input_file}")
-        results = processor.process_file(args.input_file)
+        logger.info(f"Starting processing for file: {input_file_path}")
+        results = processor.process_file(input_file_path)
         logger.debug(f"Processing results: {results}")
 
         # Determine if plots should be shown interactively from config
@@ -72,7 +99,7 @@ def main() -> None:
             output_dir_path.mkdir(parents=True, exist_ok=True) # Create output directory
             logger.info(f"Output will be saved to: {output_dir_path.resolve()}")
             
-            output_file_stem = Path(args.input_file).stem
+            output_file_stem = Path(input_file_path).stem
             output_base_path = output_dir_path / output_file_stem
 
             # Save processed audio
@@ -145,12 +172,12 @@ def main() -> None:
         ])
 
         if all_successful:
-            logger.info(f"Successfully processed '{args.input_file}'. Status: {status_msg}")
+            logger.info(f"Successfully processed '{input_file_path}'. Status: {status_msg}")
         else:
-            logger.error(f"Processing '{args.input_file}' encountered issues. Status: {status_msg}")
+            logger.error(f"Processing '{input_file_path}' encountered issues. Status: {status_msg}")
 
     except FileNotFoundError:
-        logger.error(f"Error: Input file not found at '{args.input_file}'. Please check the path.")
+        logger.error(f"Error: Input file not found at '{input_file_path}'. Please check the path.")
     except Exception as e:
         logger.critical(f"An critical unexpected error occurred in main: {e}", exc_info=True)
         # import sys
