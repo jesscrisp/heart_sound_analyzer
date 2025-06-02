@@ -42,7 +42,7 @@ def parse_arguments():
 
 def main() -> None:
     """Main function to run the heart sound analysis."""
-    load_dotenv() # Load environment variables from .env file
+    load_dotenv(override=True) # Load environment variables from .env file, overriding existing ones
     PROJECT_ROOT = Path(__file__).resolve().parent.parent # Get to PyPCG_first_attempt
     args = parse_arguments()
 
