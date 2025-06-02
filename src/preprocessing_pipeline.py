@@ -62,7 +62,21 @@ class SignalPreprocessor:
         self.pycpg_processing_params = self.config.get('pycpg_processing_params', {})
         logger.info("SignalPreprocessor initialized.")
 
-    def preprocess(self, audio_data: Union[np.ndarray, PCGSignalType], sample_rate: int) -> Tuple[Optional[PCGSignalType], str]:
+    def preprocess(self, audio_data: Union[np.ndarray, PCGSignalType], sample_rate: int) -> Tuple[Optional[Dict[str, Union[np.ndarray, PCGSignalType]]], str]:
+        """
+        Applies a preprocessing pipeline (filter, denoise, normalize) to the audio data.
+        Prioritizes pyPCG if available and the input is a pcg_signal object or can be converted.
+
+        Args:
+            audio_data: The input audio data, either as a NumPy array or a pyPCG.pcg_signal object.
+            sample_rate: The sample rate of the audio data.
+
+        Returns:
+            A tuple containing:
+                - A dictionary of processed signals at various stages (as NumPy arrays, plus the final as PCGSignalType), or None if processing fails.
+                  Keys: 'raw_for_preprocessing', 'after_highpass', 'after_lowpass', 'after_denoise', 'final_processed_data', 'final_processed_signal_object'.
+                - A status message string.
+        """
         """
         Applies a preprocessing pipeline (filter, denoise, normalize) to the audio data.
         Prioritizes pyPCG if available and the input is a pcg_signal object or can be converted.
@@ -80,7 +94,11 @@ class SignalPreprocessor:
             logger.warning("pyPCG preprocessing components not fully available. Skipping pyPCG preprocessing.")
             # Fallback logic when pyPCG components are not fully available
             if pcg_signal and isinstance(audio_data, pcg_signal): # Check if it's already a pcg_signal
-                return audio_data, "pyPCG preprocessing components unavailable; returning original pcg_signal object."
+                # Even if components are unavailable, if we want to return a dict, we should structure it.
+                # However, the logic here is to *not* process if components are missing.
+                # The original return was just the signal object. For consistency with new return type, this needs adjustment or implies failure.
+                # Let's assume failure to produce the dict of steps if components are missing.
+                return None, "pyPCG preprocessing components unavailable; cannot perform staged preprocessing."
             elif isinstance(audio_data, np.ndarray):
                 # If it's a NumPy array and we can't process it with pyPCG (due to missing components),
                 # we cannot convert it to PCGSignalType here without pcg_signal constructor.
@@ -121,15 +139,38 @@ class SignalPreprocessor:
             denoise_step = wt_denoise_sth # wt_denoise_sth is a function, not a dict with 'step'
             normalize_step = pyPCG_normalize # pyPCG_normalize is a function
             
-            # process_pipeline expects functions or dicts with 'step' and 'params'
-            # For functions like wt_denoise_sth and pyPCG_normalize, they are passed directly. 
-            core_pipeline = process_pipeline(hp_filter_step, lp_filter_step, denoise_step, normalize_step)
+            intermediate_signals = {}
+            current_signal_obj = pcg_input_signal
+            intermediate_signals['raw_for_preprocessing'] = np.copy(current_signal_obj.data) # Store initial data
+
+            # 1. High-pass filter
+            logger.info(f"Applying pyPCG High-Pass Filter (Order: {filter_order}, Cutoff: {low_cut}Hz)...")
+            current_signal_obj = pyPCG_filter(current_signal_obj, filt_ord=filter_order, filt_cutfreq=low_cut, filt_type='HP')
+            intermediate_signals['after_highpass'] = np.copy(current_signal_obj.data)
+            logger.info("High-Pass Filter applied.")
+
+            # 2. Low-pass filter
+            logger.info(f"Applying pyPCG Low-Pass Filter (Order: {filter_order}, Cutoff: {high_cut}Hz)...")
+            current_signal_obj = pyPCG_filter(current_signal_obj, filt_ord=filter_order, filt_cutfreq=high_cut, filt_type='LP')
+            intermediate_signals['after_lowpass'] = np.copy(current_signal_obj.data)
+            logger.info("Low-Pass Filter applied.")
+
+            # 3. Wavelet Denoising
+            logger.info("Applying pyPCG Wavelet Denoising (wt_denoise_sth)...")
+            current_signal_obj = wt_denoise_sth(current_signal_obj)
+            intermediate_signals['after_denoise'] = np.copy(current_signal_obj.data)
+            logger.info("Wavelet Denoising applied.")
+
+            # 4. Normalization
+            logger.info("Applying pyPCG Normalization...")
+            current_signal_obj = pyPCG_normalize(current_signal_obj)
+            intermediate_signals['final_processed_data'] = np.copy(current_signal_obj.data)
+            logger.info("Normalization applied.")
             
-            logger.info(f"Applying pyPCG core processing pipeline (HPF@{low_cut}Hz, LPF@{high_cut}Hz, Denoise, Normalize)...")
-            processed_pcg_obj = core_pipeline.run(pcg_input_signal)
-            logger.info("pyPCG core processing pipeline applied successfully.")
-            
-            return processed_pcg_obj, "pyPCG preprocessing successful."
+            intermediate_signals['final_processed_signal_object'] = current_signal_obj # Keep the final object for downstream use
+
+            logger.info("pyPCG sequential preprocessing steps applied successfully.")
+            return intermediate_signals, "pyPCG preprocessing successful."
 
         except Exception as e:
             logger.error(f"Error during pyPCG preprocessing pipeline: {e}", exc_info=True)

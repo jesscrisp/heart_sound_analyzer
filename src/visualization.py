@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import logging
 from matplotlib.patches import Rectangle
+import io
+import base64
+import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -356,6 +359,156 @@ class HeartSoundVisualizer:
             logger.error(f"Error generating envelope plot: {e}")
             raise
     
+    def plot_signal_to_html_embeddable(self, signal: np.ndarray, sample_rate: float, title: str) -> str:
+        """
+        Generates a plot of the signal and returns it as an HTML embeddable img tag.
+
+        Args:
+            signal: The signal array (NumPy array).
+            sample_rate: Sample rate in Hz.
+            title: Title for the plot.
+
+        Returns:
+            An HTML string for an <img> tag with the plot embedded as base64,
+            or an error message if the signal is empty.
+        """
+        if signal is None or signal.size == 0:
+            logger.warning(f"Cannot plot empty or None signal for title: {title}")
+            # Return a placeholder or error message as HTML
+            return (f'<div style="border: 1px solid red; padding: 10px; margin: 5px;">'
+                    f'<p style="color: red; font-weight: bold;">Error: No data to plot for \"{title}\”.</p>'
+                    f'</div>')
+
+        fig, ax = plt.subplots()
+        time_axis = self.create_time_axis(signal, sample_rate)
+        
+        ax.plot(time_axis, signal, label=title) # Removed color for default cycling
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Amplitude")
+        ax.set_title(title)
+        if title: # Only add legend if title is not empty, as it's used as label
+            ax.legend()
+        # ax.grid(True) # Grid is typically handled by _setup_style
+
+        # Save plot to an in-memory buffer
+        buf = io.BytesIO()
+        try:
+            plt.savefig(buf, format='png', bbox_inches='tight')
+            buf.seek(0)
+            # Encode image to base64
+            image_base64 = base64.b64encode(buf.read()).decode('utf-8')
+            # Create HTML img tag
+            html_img = f'<img src="data:image/png;base64,{image_base64}" alt="{title}" style="max-width:100%; height:auto;">'
+        except Exception as e:
+            logger.error(f"Error generating plot for {title}: {e}")
+            html_img = (f'<div style="border: 1px solid red; padding: 10px; margin: 5px;">'
+                        f'<p style="color: red; font-weight: bold;">Error generating plot for \"{title}\”: {e}</p>'
+                        f'</div>')
+        finally:
+            plt.close(fig) # Close the figure to free memory
+            buf.close()
+        
+        return html_img
+
+    def generate_html_report(self, raw_audio: np.ndarray, processed_audio: np.ndarray,
+                             envelope: np.ndarray, segments: Dict[str, np.ndarray],
+                             sample_rate: float, output_html_path: str,
+                             config: Optional[Dict[str, Any]] = None) -> None:
+        """Generates a comprehensive HTML report with various pipeline visualizations."""
+        html_parts = []
+        html_parts.append("<html><head><title>Heart Sound Analysis Report</title>")
+        html_parts.append("<style>body { font-family: Arial, sans-serif; margin: 20px; } h1 { text-align: center; color: #333; } h2 { margin-top: 30px; color: #444; border-bottom: 1px solid #eee; padding-bottom: 5px;} hr { display: none; } img { display: block; margin-left: auto; margin-right: auto; max-width:90%; height:auto; border: 1px solid #ccc; margin-bottom: 10px; box-shadow: 2px 2px 5px #ddd; margin-top:10px; } p.error { color:red; font-weight:bold; text-align:center; } p.warning { color:orange; text-align:center; }</style>")
+        html_parts.append("</head><body>")
+        html_parts.append("<h1>Heart Sound Analysis Report</h1>")
+
+        # 1. Raw Audio
+        try:
+            html_parts.append("<h2>Raw Audio Signal</h2>")
+            html_parts.append(self.plot_signal_to_html_embeddable(raw_audio, sample_rate, "Raw Audio Signal Plot"))
+        except Exception as e:
+            logger.error(f"Error generating raw audio plot for HTML report: {e}", exc_info=True)
+            html_parts.append(f'<p class="error">Error generating raw audio plot: {e}</p>')
+        html_parts.append("<hr>")
+
+        # 2. Processed Audio
+        try:
+            html_parts.append("<h2>Processed Audio Signal</h2>")
+            html_parts.append(self.plot_signal_to_html_embeddable(processed_audio, sample_rate, "Processed Audio Signal Plot"))
+        except Exception as e:
+            logger.error(f"Error generating processed audio plot for HTML report: {e}", exc_info=True)
+            html_parts.append(f'<p class="error">Error generating processed audio plot: {e}</p>')
+        html_parts.append("<hr>")
+
+        # 3. Envelope Plot (custom plot for HTML report)
+        html_parts.append("<h2>Signal with Envelope</h2>")
+        fig_env_plot = None # Ensure fig_env_plot is defined for finally block
+        buf_env = io.BytesIO()
+        try:
+            fig_env_plot, ax_env_plot = plt.subplots(figsize=self.config.get('plot_envelope_figsize', (12,4)))
+            time_axis_env = self.create_time_axis(processed_audio, sample_rate)
+            ax_env_plot.plot(time_axis_env, processed_audio, label='Processed Signal', alpha=0.5, linewidth=0.8)
+            ax_env_plot.plot(time_axis_env, envelope, label='Envelope', color='red', linewidth=1.0)
+            ax_env_plot.set_title("Signal with Envelope Plot")
+            ax_env_plot.set_xlabel("Time (s)")
+            ax_env_plot.set_ylabel("Amplitude")
+            ax_env_plot.legend()
+            ax_env_plot.grid(True, linestyle=':', alpha=0.7)
+            plt.tight_layout()
+            fig_env_plot.savefig(buf_env, format='png', bbox_inches='tight')
+            buf_env.seek(0)
+            image_base64_env = base64.b64encode(buf_env.read()).decode('utf-8')
+            html_parts.append(f'<img src="data:image/png;base64,{image_base64_env}" alt="Signal with Envelope Plot">')
+        except Exception as e_env:
+            logger.error(f"Error generating envelope plot for HTML report: {e_env}", exc_info=True)
+            html_parts.append(f'<p class="error">Error generating envelope plot: {e_env}</p>')
+        finally:
+            if fig_env_plot:
+                 plt.close(fig_env_plot)
+            buf_env.close()
+        html_parts.append("<hr>")
+
+        # 4. Segmentation Plot (using temp file method)
+        html_parts.append("<h2>Signal Segmentation</h2>")
+        output_dir_report = Path(output_html_path).parent
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+        temp_seg_filename = f"temp_seg_plot_{Path(output_html_path).stem}_{timestamp_str}.png"
+        temp_seg_path = output_dir_report / temp_seg_filename
+        
+        try:
+            self.plot_segmentation(
+                signal=processed_audio, 
+                sample_rate=sample_rate, 
+                segments=segments, 
+                output_path=str(temp_seg_path), 
+                show=False
+            )
+            if temp_seg_path.exists():
+                with open(temp_seg_path, "rb") as image_file:
+                    image_base64_seg = base64.b64encode(image_file.read()).decode('utf-8')
+                html_parts.append(f'<img src="data:image/png;base64,{image_base64_seg}" alt="Signal Segmentation Plot">')
+            else:
+                logger.warning(f"Segmentation plot temp file not found at {temp_seg_path} after attempting to save.")
+                html_parts.append(f'<p class="warning">Could not generate segmentation plot (temp file not found at {temp_seg_path}).</p>')
+        except Exception as e_seg:
+            logger.error(f"Error generating or processing segmentation plot for HTML report: {e_seg}", exc_info=True)
+            html_parts.append(f'<p class="error">Error generating segmentation plot: {e_seg}</p>')
+        finally:
+            if temp_seg_path.exists():
+                 try:
+                     temp_seg_path.unlink()
+                 except OSError as e_unlink:
+                     logger.warning(f"Could not delete temp segmentation plot {temp_seg_path}: {e_unlink}")
+
+        html_parts.append("</body></html>")
+        final_html = "\n".join(html_parts)
+
+        try:
+            with open(output_html_path, 'w', encoding='utf-8') as f:
+                f.write(final_html)
+            logger.info(f"HTML report successfully generated: {output_html_path}")
+        except Exception as e:
+            logger.error(f"Error writing HTML report to {output_html_path}: {e}", exc_info=True)
+
     def plot_heart_cycles(
         self,
         signal: np.ndarray,

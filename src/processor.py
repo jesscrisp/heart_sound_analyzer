@@ -142,30 +142,50 @@ class HeartSoundProcessor:
                 # Proceed with preprocessing and envelope extraction if input is valid
                 if input_for_preprocessor is not None and sample_rate is not None:
                     logger.info("Attempting signal preprocessing...")
-                    # preprocess now returns (Optional[PCGSignalType], str)
-                    processed_pcg_object, preprocess_status = self.signal_preprocessor.preprocess(input_for_preprocessor, sample_rate)
+                    # preprocess now returns (Optional[Dict[str, Union[np.ndarray, PCGSignalType]]], str)
+                    intermediate_signals_dict, preprocess_status = self.signal_preprocessor.preprocess(input_for_preprocessor, sample_rate)
                     status_message += f" {preprocess_status}"
 
-                    if processed_pcg_object is not None and pcg_signal and isinstance(processed_pcg_object, pcg_signal):
-                        processed_signal_data = processed_pcg_object.data # Extract numpy array for saving/other uses
-                        sample_rate = processed_pcg_object.fs # Update sample rate from processed object
-                        logger.info(f"Signal preprocessing step completed. Processed data shape: {processed_signal_data.shape if processed_signal_data is not None else 'N/A'}")
-                        processing_pipeline_successful = True
+                    # Initialize intermediate signal storage in results
+                    results_intermediate_signals = {
+                        'raw_for_preprocessing': None,
+                        'after_highpass': None,
+                        'after_lowpass': None,
+                        'after_denoise': None
+                    }
 
-                        logger.info("Attempting envelope extraction...")
-                        # extract_envelope now takes PCGSignalType object
-                        extracted_envelope_data, envelope_status = self.envelope_extractor.extract_envelope(processed_pcg_object)
-                        status_message += f" {envelope_status}"
+                    if intermediate_signals_dict is not None:
+                        results_intermediate_signals['raw_for_preprocessing'] = intermediate_signals_dict.get('raw_for_preprocessing')
+                        results_intermediate_signals['after_highpass'] = intermediate_signals_dict.get('after_highpass')
+                        results_intermediate_signals['after_lowpass'] = intermediate_signals_dict.get('after_lowpass')
+                        results_intermediate_signals['after_denoise'] = intermediate_signals_dict.get('after_denoise')
+                        
+                        processed_signal_data = intermediate_signals_dict.get('final_processed_data') # This is a NumPy array
+                        processed_pcg_object_for_envelope = intermediate_signals_dict.get('final_processed_signal_object') # This is a PCGSignalType object
 
-                        if extracted_envelope_data is not None and extracted_envelope_data.size > 0:
-                            logger.info(f"Envelope extraction step completed. Envelope shape: {extracted_envelope_data.shape}")
-                            envelope_extraction_successful = True
+                        if processed_signal_data is not None and processed_pcg_object_for_envelope is not None and pcg_signal and isinstance(processed_pcg_object_for_envelope, pcg_signal):
+                            sample_rate = processed_pcg_object_for_envelope.fs # Update sample rate from processed object
+                            logger.info(f"Signal preprocessing step completed. Processed data shape: {processed_signal_data.shape}")
+                            processing_pipeline_successful = True
+
+                            logger.info("Attempting envelope extraction...")
+                            # extract_envelope now takes PCGSignalType object
+                            extracted_envelope_data, envelope_status = self.envelope_extractor.extract_envelope(processed_pcg_object_for_envelope)
+                            status_message += f" {envelope_status}"
+
+                            if extracted_envelope_data is not None and extracted_envelope_data.size > 0:
+                                logger.info(f"Envelope extraction step completed. Envelope shape: {extracted_envelope_data.shape}")
+                                envelope_extraction_successful = True
+                            else:
+                                logger.warning("Envelope extraction returned None or empty data.")
+                                envelope_extraction_successful = False
                         else:
-                            logger.warning("Envelope extraction returned None or empty data.")
+                            logger.warning("Signal preprocessing did not return valid final processed data or signal object. Skipping further processing.")
+                            processing_pipeline_successful = False
                             envelope_extraction_successful = False
-                            # No need to change status_message further, already updated by envelope_status
-                    else: # processed_pcg_object was None or not a pcg_signal (preprocessing failed)
-                        logger.warning("Signal preprocessing returned None or an invalid object. Skipping further processing in this path.")
+                            processed_signal_data = None # Ensure data is None
+                    else: # intermediate_signals_dict was None (preprocessing failed)
+                        logger.warning("Signal preprocessing returned None. Skipping further processing in this path.")
                         processing_pipeline_successful = False
                         envelope_extraction_successful = False
                         processed_signal_data = None # Ensure data is None if preprocessing failed
@@ -191,19 +211,10 @@ class HeartSoundProcessor:
                         envelope_data=extracted_envelope_data,
                         **segmentation_kwargs
                     )
-                    # Comprehensive debug print for segmentation_results
-                    debug_info = {}
-                    for key, value in segmentation_results.items():
-                        if isinstance(value, np.ndarray):
-                            debug_info[key] = f"ndarray, shape={value.shape}, dtype={value.dtype}"
-                        elif isinstance(value, (list, tuple)):
-                            debug_info[key] = f"{type(value).__name__}, len={len(value)}"
-                        else:
-                            debug_info[key] = f"type={type(value).__name__}"
-                    print(f"🔍 PROCESSOR DEBUG: segmentation_results content: {debug_info}")
+                    segments = segmentation_results # Ensure the 'segments' variable for final_results gets the actual data
 
-                    s1_segments_array = segmentation_results.get("s1_segments", np.array([]))
-                    s2_segments_array = segmentation_results.get("s2_segments", np.array([]))
+                    s1_segments_array = segments.get("s1_segments", np.array([])) # Use 'segments' dict directly
+                    s2_segments_array = segments.get("s2_segments", np.array([])) # Use 'segments' dict directly
 
                     # Robust extraction of S1 and S2 starts and ends
                     s1_starts, s1_ends = (s1_segments_array[:, 0], s1_segments_array[:, 1]) if s1_segments_array.ndim == 2 and s1_segments_array.shape[0] > 0 else (np.array([]), np.array([]))
@@ -247,8 +258,14 @@ class HeartSoundProcessor:
         # Prepare final results dictionary
         final_results = {
             'file_path': file_path,
-            'raw_audio_data': raw_signal_data,  # Original raw audio data, previously 'signal' or 'raw_signal_data'
-            'processed_audio_data': processed_signal_data,  # Audio data after pyPCG processing, previously 'processed' or 'processed_signal_for_segmentation'
+            'raw_audio_data': raw_signal_data,  # Original raw audio data
+            # Intermediate preprocessing signals
+            'raw_for_preprocessing': results_intermediate_signals.get('raw_for_preprocessing') if 'results_intermediate_signals' in locals() else None,
+            'after_highpass': results_intermediate_signals.get('after_highpass') if 'results_intermediate_signals' in locals() else None,
+            'after_lowpass': results_intermediate_signals.get('after_lowpass') if 'results_intermediate_signals' in locals() else None,
+            'after_denoise': results_intermediate_signals.get('after_denoise') if 'results_intermediate_signals' in locals() else None,
+            # Final processed signal (NumPy array)
+            'processed_audio_data': processed_signal_data,
             'sample_rate': sample_rate,
             'envelope': extracted_envelope_data,
             'segments': segments,

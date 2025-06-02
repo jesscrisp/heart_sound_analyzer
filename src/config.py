@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent # Get to PyPCG_firs
 DEFAULT_PROJECT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
 
 def load_config(cli_config_path_str: str = None) -> Dict[str, Any]:
+    print("[CONFIG.PY-DEBUG] load_config entered.") # CASCADE DEBUG
     """Load configuration from YAML file.
 
     If cli_config_path_str is provided, attempts to load from that path.
@@ -94,44 +95,50 @@ def load_config(cli_config_path_str: str = None) -> Dict[str, Any]:
         path_to_try_loading = Path(cli_config_path_str)
         is_cli_path = True
         config_source_description = f"CLI path: '{path_to_try_loading}'"
-        logger.info(f"CLI configuration path provided: '{path_to_try_loading}'. Attempting to load.")
+        print(f"[CONFIG.PY-DEBUG] CLI configuration path provided: '{path_to_try_loading}'. Attempting to load.") # CASCADE DEBUG
     else:
         # Check for DEFAULT_CONFIG_FILE environment variable
         default_config_file_env = os.getenv('DEFAULT_CONFIG_FILE')
         if default_config_file_env:
             path_to_try_loading = PROJECT_ROOT / default_config_file_env
             config_source_description = f"environment variable DEFAULT_CONFIG_FILE: '{path_to_try_loading}'"
-            logger.info(f"Using configuration path from environment variable DEFAULT_CONFIG_FILE: '{path_to_try_loading}'.")
+            print(f"[CONFIG.PY-DEBUG] Using configuration path from environment variable DEFAULT_CONFIG_FILE: '{path_to_try_loading}'.") # CASCADE DEBUG
         else:
             path_to_try_loading = DEFAULT_PROJECT_CONFIG_PATH
             config_source_description = f"default project path: '{path_to_try_loading}'"
-            logger.info(f"No CLI path or DEFAULT_CONFIG_FILE env var. Attempting to load from default project path: '{path_to_try_loading}'.")
+            print(f"[CONFIG.PY-DEBUG] No CLI path or DEFAULT_CONFIG_FILE env var. Attempting to load from default project path: '{path_to_try_loading}'.") # CASCADE DEBUG
 
     try:
         # Using resolve() for a more absolute path in logs, helps in debugging.
         # Note: resolve() will raise FileNotFoundError if the path doesn't exist, so call it carefully.
         # For logging the path that was *attempted*, path_to_try_loading (as string) is fine.
-        
+        print(f"[CONFIG.PY-DEBUG] Attempting to open and load YAML from: {path_to_try_loading}") # CASCADE DEBUG
         with open(path_to_try_loading, 'r') as f:
             file_config = yaml.safe_load(f)
+            print(f"[CONFIG.PY-DEBUG] YAML loaded. Content snippet: {str(file_config)[:200]}...") # CASCADE DEBUG
 
         if file_config:
-            logger.info(f"Successfully loaded and merged configuration from {config_source_description} (resolved: '{path_to_try_loading.resolve()}').")
-            return _deep_merge(default_config, file_config)
+            print(f"[CONFIG.PY-DEBUG] Successfully loaded and merged configuration from {config_source_description} (resolved: '{path_to_try_loading.resolve()}').") # CASCADE DEBUG
+            merged_config = _deep_merge(default_config, file_config)
+            print(f"[CONFIG.PY-DEBUG] Merged config 'output' section: {merged_config.get('output')}") # CASCADE DEBUG
+            return merged_config
         else:
-            logger.warning(f"Configuration file from {config_source_description} (resolved: '{path_to_try_loading.resolve()}') is empty. Using internal default configuration.")
+            print(f"[CONFIG.PY-DEBUG] Configuration file from {config_source_description} (resolved: '{path_to_try_loading.resolve()}') is empty. Using internal default configuration.") # CASCADE DEBUG
+            print(f"[CONFIG.PY-DEBUG] Default config 'output' section: {default_config.get('output')}") # CASCADE DEBUG
             return default_config
 
     except FileNotFoundError:
         resolved_path_str = str(path_to_try_loading.resolve(strict=False)) # Get path string even if it doesn't exist
         if is_cli_path:
-            logger.warning(f"Configuration file specified via {config_source_description} not found: '{resolved_path_str}'. Using internal default configuration.")
+            print(f"[CONFIG.PY-DEBUG] WARNING: Configuration file specified via {config_source_description} not found: '{resolved_path_str}'. Using internal default configuration.") # CASCADE DEBUG
         else:
-            logger.info(f"Configuration file from {config_source_description} not found at '{resolved_path_str}'. Using internal default configuration.") # This case might be less common now with env var check
+            print(f"[CONFIG.PY-DEBUG] INFO: Configuration file from {config_source_description} not found at '{resolved_path_str}'. Using internal default configuration.") # CASCADE DEBUG
+        print(f"[CONFIG.PY-DEBUG] Default config 'output' section (due to FileNotFoundError): {default_config.get('output')}") # CASCADE DEBUG
         return default_config
     except Exception as e:
         resolved_path_str = str(path_to_try_loading.resolve(strict=False))
-        logger.warning(f"Error loading configuration from {config_source_description} (resolved: '{resolved_path_str}'): {e}. Using internal default configuration.")
+        print(f"[CONFIG.PY-DEBUG] WARNING: Error loading configuration from {config_source_description} (resolved: '{resolved_path_str}'): {e}. Using internal default configuration.") # CASCADE DEBUG
+        print(f"[CONFIG.PY-DEBUG] Default config 'output' section (due to Exception): {default_config.get('output')}") # CASCADE DEBUG
         return default_config
 
 def _deep_merge(d1: Dict, d2: Dict) -> Dict:
